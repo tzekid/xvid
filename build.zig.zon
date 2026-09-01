@@ -1,0 +1,21 @@
+.{
+    .name = .xvid,
+    .version = "1.0.0",
+    .fingerprint = 0x21533622f951fa9f,
+    .minimum_zig_version = "0.17.0-dev.1509+bb296ab9b",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        ".zigversion",
+        "src",
+        "assets",
+        "tests",
+        "deploy",
+        "scripts",
+        "docs",
+        "AGENTS.md",
+        "OPERATIONS.md",
+        "README.md",
+    },
+}

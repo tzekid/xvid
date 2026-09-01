@@ -1,0 +1,12 @@
+# Zig runtime and build output
+.zig-cache/
+zig-out/
+data/
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
+logs/
+.run/

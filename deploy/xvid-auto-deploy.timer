@@ -1,0 +1,11 @@
+[Unit]
+Description=Check xvid master for a verified revision
+
+[Timer]
+OnBootSec=30s
+OnUnitInactiveSec=60s
+AccuracySec=10s
+Unit=xvid-auto-deploy.service
+
+[Install]
+WantedBy=timers.target

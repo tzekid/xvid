@@ -1,0 +1,11 @@
+[Unit]
+Description=Deploy verified xvid master revisions
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/lib/xvid/xvid-auto-deploy
+TimeoutStartSec=15min
+UMask=0077
+PrivateTmp=yes

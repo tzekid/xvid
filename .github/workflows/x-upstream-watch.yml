@@ -1,0 +1,56 @@
+name: X upstream watch
+
+on:
+  schedule:
+    - cron: '23 8 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: x-upstream-watch
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compare reviewed upstream
+        id: upstream
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          report="$RUNNER_TEMP/x-upstream.json"
+          scripts/check-x-upstream.sh > "$report"
+          printf 'changed=%s\n' "$(jq -r '.changed' "$report")" >> "$GITHUB_OUTPUT"
+          jq '{checked_at, changed, sources}' "$report"
+
+      - name: Open or refresh issue
+        if: steps.upstream.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          title='Native X upstream changed'
+          report="$RUNNER_TEMP/x-upstream.json"
+          body="$RUNNER_TEMP/x-upstream.md"
+          jq -r '
+            "The reviewed yt-dlp Twitter extractor changed. xvid itself was not modified.\n\n" +
+            ([.sources[] | select(.changed) |
+              "- [Inspect upstream diff](\(.diff_url)) (`\(.current_commit)`)"
+            ] | join("\n")) +
+            "\n\nInspect the diff, update `src/x.zig` and fixtures only if behavior changed, then run the existing Zig tests and one representative live X check."
+          ' "$report" > "$body"
+
+          number=$(gh issue list --state open --search '"Native X upstream changed" in:title' \
+            --json number,title --jq 'map(select(.title == "Native X upstream changed"))[0].number // empty')
+          if [[ -n "$number" ]]; then
+            gh issue edit "$number" --body-file "$body"
+          else
+            gh issue create --title "$title" --body-file "$body"
+          fi

@@ -1,0 +1,48 @@
+[Unit]
+Description=xvid native X media utility
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.local/share/xvid
+ExecStartPre=%h/.local/lib/xvid/xvid doctor --config %h/.config/xvid/config.json
+ExecStart=%h/.local/lib/xvid/xvid serve --config %h/.config/xvid/config.json
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=20s
+UMask=0077
+
+NoNewPrivileges=yes
+PrivateDevices=yes
+PrivateTmp=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectHome=tmpfs
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectProc=invisible
+ProcSubset=pid
+ProtectSystem=strict
+ReadWritePaths=%h/.local/share/xvid
+BindReadOnlyPaths=%h/.local/lib/xvid/xvid
+BindReadOnlyPaths=%h/.config/xvid/config.json
+BindPaths=%h/.local/share/xvid
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+
+MemoryHigh=1536M
+MemoryMax=2G
+CPUQuota=200%
+TasksMax=64
+LimitNOFILE=1024
+
+[Install]
+WantedBy=default.target
