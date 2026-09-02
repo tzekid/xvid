@@ -27,7 +27,7 @@ jobs:
 
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.17.0-dev.1509+bb296ab9b
+          version: 0.17.0-dev.1963+e00c6c439
 
       - name: Verify
         run: |
