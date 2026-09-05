@@ -23,7 +23,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes libsqlite3-dev sqlite3 curl ripgrep
+          sudo apt-get install --yes libsqlite3-dev sqlite3 curl ripgrep ffmpeg
 
       - uses: mlugg/setup-zig@v2
         with:

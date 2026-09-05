@@ -37,8 +37,10 @@ Redis, account system, or permanent media library.
 
 ## Build and test
 
-The Zig revision is pinned in `.zigversion`. Development requires SQLite 3;
-production additionally requires FFmpeg and FFprobe.
+The Zig revision is pinned in `.zigversion`. Development requires SQLite 3.
+The E2E journey and production also require FFmpeg/FFprobe with the MPEG-4,
+H.264 (`libx264`), and AAC codecs available in the normal distribution package.
+Missing tools fail the journey; real conversion is never skipped.
 
 ```bash
 zig build test -Doptimize=ReleaseSafe
@@ -49,7 +51,12 @@ zig build -Doptimize=ReleaseSafe
 `zig build test` covers focused parsing, validation, state, and rendering logic.
 `zig build e2e` launches the real xvid binary with deterministic Zig fixtures
 and exercises the important HTTP, persistence, acquisition, conversion, Range,
-cancellation, recovery, usage, and cleanup paths.
+cancellation, recovery, usage, and cleanup paths. A separate disposable instance
+uses real tools to convert a generated one-second MPEG-4/AAC clip to H.264/AAC;
+the HTTP-delivered file is probed for dimensions/pixel format/duration and decoded
+in full. Synthetic fixtures remain for deliberate encoder failure and a stalled
+encoder with a TERM-ignoring descendant. All upstream traffic is loopback fixture
+traffic; these checks do not depend on live X availability.
 
 ## Production
 
