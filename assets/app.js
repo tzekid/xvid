@@ -143,7 +143,8 @@
     form.append(status)
     if (submitter) {
       submitter.dataset.previousLabel = submitter.textContent
-      submitter.textContent = submitter.name === 'advanced' ? 'Checking…' : 'Working…'
+      const label = submitter.querySelector('[data-basic-label]') || submitter
+      label.textContent = submitter.name === 'advanced' ? 'Checking…' : 'Working…'
       submitter.disabled = true
     }
   }
@@ -153,7 +154,7 @@
     form.querySelector('[data-optimistic]')?.remove()
     if (submitter) {
       submitter.disabled = false
-      if (submitter.dataset.previousLabel) submitter.textContent = submitter.dataset.previousLabel
+      if (submitter.dataset.previousLabel) (submitter.querySelector('[data-basic-label]') || submitter).textContent = submitter.dataset.previousLabel
       delete submitter.dataset.previousLabel
     }
   }
@@ -172,7 +173,15 @@
       })
       const currentUrl = new URL(location.href)
       const targetUrl = new URL(response.url)
+      const draft = form.matches('[data-link-form]') && response.ok ? '' : document.querySelector('#url')?.value || ''
+      if (form.matches('[data-link-form]')) document.activeElement?.blur()
       replaceApp(next, response.url, currentUrl.pathname === targetUrl.pathname ? 'replace' : 'push')
+      const input = document.querySelector('#url')
+      if (input && draft) {
+        input.value = draft
+        input.dispatchEvent(new Event('input'))
+      }
+      if (form.matches('[data-link-form]')) window.scrollTo(0, 0)
     } catch {
       clearOptimistic(form, submitter)
       form.dataset.nativeSubmit = '1'
@@ -534,6 +543,7 @@
     const poll = async () => {
       try {
         const { document: next } = await fetchPage(location.href)
+        if (closed) return
         const fragment = next.querySelector('[data-state-fragment]')
         if (fragment) replaceJobState(app, fragment.outerHTML)
         if (!next.querySelector('#app[data-events]')) {

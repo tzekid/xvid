@@ -2,7 +2,22 @@ const std = @import("std");
 const job_mod = @import("job.zig");
 
 const maximum_share_bytes = 64 * 1024 * 1024;
-const asset_version = "3";
+const asset_version = "4";
+
+const link_composer =
+    \\<div class="persistent-composer">
+    \\      <form class="link-form" action="/jobs" method="post" data-link-form data-nav-form>
+    \\        <label for="url">Public X post link</label>
+    \\        <div class="url-control">
+    \\          <input id="url" name="url" type="url" inputmode="url" autocomplete="url" autocapitalize="none" autocorrect="off" spellcheck="false" required maxlength="4096" placeholder="https://x.com/…/status/…" aria-describedby="link-error">
+    \\          <button class="clear-input" type="button" data-clear-input hidden aria-label="Clear link">×</button>
+    \\        </div>
+    \\        <p id="link-error" class="field-error" data-link-error hidden></p>
+    \\        <button class="primary-action" type="submit" data-basic-submit><span data-basic-label>Save media</span></button>
+    \\        <button class="text-action advanced-entry" type="submit" name="advanced" value="1" data-advanced-submit>Choose quality or format</button>
+    \\      </form>
+    \\</div>
+;
 
 pub const home =
     \\<!doctype html>
@@ -17,29 +32,20 @@ pub const home =
     \\  <link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
     \\  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
     \\  <link rel="manifest" href="/manifest.webmanifest">
-    \\  <link rel="stylesheet" href="/assets/app.css?v=3">
-    \\  <script src="/assets/app.js?v=3" defer></script>
+    \\  <link rel="stylesheet" href="/assets/app.css?v=4">
+    \\  <script src="/assets/app.js?v=4" defer></script>
     \\</head>
     \\<body>
     \\  <main id="app" class="app-shell compose-shell" data-page-state="compose">
     \\    <header class="app-header"><a class="brand" href="/" aria-label="xvid home">xvid</a></header>
+++ link_composer ++
     \\    <section class="compose-view" aria-labelledby="compose-title">
     \\      <div class="compose-copy">
     \\        <h1 id="compose-title">Save media from an X link</h1>
     \\        <p>Photos and videos from public X or Twitter posts. Files remain temporary.</p>
     \\      </div>
-    \\      <form class="link-form" action="/jobs" method="post" data-link-form data-nav-form>
-    \\        <label for="url">Public X post link</label>
-    \\        <div class="url-control">
-    \\          <input id="url" name="url" type="url" inputmode="url" autocomplete="url" autocapitalize="none" autocorrect="off" spellcheck="false" required maxlength="4096" placeholder="https://x.com/…/status/…" aria-describedby="link-help link-error">
-    \\          <button class="clear-input" type="button" data-clear-input hidden aria-label="Clear link">×</button>
-    \\        </div>
-    \\        <p id="link-error" class="field-error" data-link-error hidden></p>
-    \\        <button class="primary-action" type="submit" data-basic-submit><span data-basic-label>Save media</span></button>
-    \\        <button class="text-action advanced-entry" type="submit" name="advanced" value="1" data-advanced-submit>Choose quality or format</button>
-    \\      </form>
-    \\      <p id="link-help" class="privacy-note">Public status links only · no accounts · files expire automatically</p>
     \\    </section>
+    \\      <p id="link-help" class="privacy-note">Public status links only · no accounts · files expire automatically</p>
     \\  </main>
     \\</body>
     \\</html>
@@ -62,7 +68,9 @@ pub fn jobPage(writer: *std.Io.Writer, snapshot: job_mod.Snapshot, automatic_nav
         try jobUrl(writer, snapshot.data.id, "events");
         try writer.writeByte('"');
     }
-    try writer.writeAll("><header class=\"app-header\"><a class=\"brand\" href=\"/\" data-nav-link aria-label=\"xvid home\">xvid</a><span class=\"connection-state\" data-connection-state hidden></span></header><div id=\"job-state\">");
+    try writer.writeAll("><header class=\"app-header\"><a class=\"brand\" href=\"/\" data-nav-link aria-label=\"xvid home\">xvid</a><span class=\"connection-state\" data-connection-state hidden></span></header>");
+    try writer.writeAll(link_composer);
+    try writer.writeAll("<div id=\"job-state\">");
     try jobState(writer, snapshot);
     try writer.writeAll("</div></main></body></html>");
 }
@@ -114,11 +122,11 @@ pub fn jobState(writer: *std.Io.Writer, snapshot: job_mod.Snapshot) !void {
 pub fn errorPage(writer: *std.Io.Writer, title: []const u8, message: []const u8) !void {
     try writer.writeAll("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1,viewport-fit=cover\"><meta name=\"theme-color\" content=\"#ffffff\" media=\"(prefers-color-scheme: light)\"><meta name=\"theme-color\" content=\"#0b0b0b\" media=\"(prefers-color-scheme: dark)\"><title>");
     try escape(writer, title);
-    try writer.print(" · xvid</title><link rel=\"icon\" href=\"/assets/icon.svg\" type=\"image/svg+xml\"><link rel=\"stylesheet\" href=\"/assets/app.css?v={s}\"><script src=\"/assets/app.js?v={s}\" defer></script></head><body><main id=\"app\" class=\"app-shell problem-shell\" data-page-state=\"problem\"><header class=\"app-header\"><a class=\"brand\" href=\"/\" data-nav-link>xvid</a></header><section class=\"problem-view\" role=\"alert\"><p class=\"section-kicker\">Could not continue</p><h1>", .{ asset_version, asset_version });
+    try writer.print(" · xvid</title><link rel=\"icon\" href=\"/assets/icon.svg\" type=\"image/svg+xml\"><link rel=\"stylesheet\" href=\"/assets/app.css?v={s}\"><script src=\"/assets/app.js?v={s}\" defer></script></head><body><main id=\"app\" class=\"app-shell problem-shell\" data-page-state=\"problem\"><header class=\"app-header\"><a class=\"brand\" href=\"/\" data-nav-link>xvid</a></header>{s}<section class=\"problem-view\" role=\"alert\"><p class=\"section-kicker\">Could not continue</p><h1>", .{ asset_version, asset_version, link_composer });
     try escape(writer, title);
     try writer.writeAll("</h1><p>");
     try escape(writer, message);
-    try writer.writeAll("</p><a class=\"primary-link\" href=\"/\" data-nav-link>Change link</a></section></main></body></html>");
+    try writer.writeAll("</p></section></main></body></html>");
 }
 
 fn renderSourceSummary(writer: *std.Io.Writer, snapshot: job_mod.Snapshot) !void {
@@ -381,11 +389,11 @@ fn renderFailure(writer: *std.Io.Writer, snapshot: job_mod.Snapshot) !void {
     }
     try writer.writeAll("</h2><p>");
     if (snapshot.data.failure) |failure| try escape(writer, failure.message) else try writer.writeAll("Try another public X post.");
-    try writer.writeAll("</p><a class=\"primary-link\" href=\"/\" data-nav-link>Change link</a></section>");
+    try writer.writeAll("</p></section>");
 }
 
 fn renderCancelled(writer: *std.Io.Writer) !void {
-    try writer.writeAll("<section class=\"problem-view calm\" role=\"status\"><p class=\"section-kicker\">Cancelled</p><h2>Download cancelled</h2><p>No file will be published from this job.</p><a class=\"primary-link\" href=\"/\" data-nav-link>Start another</a></section>");
+    try writer.writeAll("<section class=\"problem-view calm\" role=\"status\"><p class=\"section-kicker\">Cancelled</p><h2>Download cancelled</h2><p>No file will be published from this job.</p></section>");
 }
 
 fn renderCancel(writer: *std.Io.Writer, id: []const u8) !void {
@@ -396,7 +404,7 @@ fn renderCancel(writer: *std.Io.Writer, id: []const u8) !void {
 
 fn renderUtilities(writer: *std.Io.Writer, snapshot: job_mod.Snapshot) !void {
     if (!snapshot.data.state.terminal()) return;
-    try writer.writeAll("<footer class=\"job-utilities\"><a href=\"/\" data-nav-link>Start another</a><form method=\"post\" action=\"");
+    try writer.writeAll("<footer class=\"job-utilities\"><form method=\"post\" action=\"");
     try jobUrl(writer, snapshot.data.id, "delete");
     try writer.writeAll("\" data-nav-form><button class=\"danger-action\" type=\"submit\">Delete files now</button></form></footer>");
 }

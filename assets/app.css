@@ -75,7 +75,7 @@ summary:focus-visible {
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
-  margin-bottom: clamp(2rem, 9vh, 5rem);
+  margin-bottom: 1.6rem;
 }
 
 .job-shell .app-header,
@@ -99,6 +99,27 @@ summary:focus-visible {
 }
 
 .compose-view { width: 100%; }
+.persistent-composer {
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  padding: 0.75rem 0;
+  margin-bottom: 1.5rem;
+  border-bottom: 1px solid var(--line);
+  background: var(--canvas);
+}
+.persistent-composer .link-form {
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.5rem 0.65rem;
+}
+.persistent-composer label,
+.persistent-composer .field-error,
+.persistent-composer .advanced-entry,
+.persistent-composer [data-optimistic] { grid-column: 1 / -1; }
+.persistent-composer .url-control { grid-column: 1; grid-row: 2; min-width: 0; }
+.persistent-composer .primary-action { grid-column: 2; grid-row: 2; min-height: 3rem; padding: 0.65rem 0.85rem; }
+.persistent-composer input { min-height: 3rem; padding-block: 0.65rem; }
+.persistent-composer .advanced-entry { min-height: 2.75rem; padding-block: 0.4rem; font-size: 0.85rem; }
 .compose-copy { margin-bottom: 1.55rem; }
 .compose-copy h1,
 .source-summary h1,
@@ -451,9 +472,7 @@ progress:not([value]) { animation: pulse 1.25s ease-in-out infinite alternate; }
 
 @media (min-width: 46rem) {
   .app-shell { padding-inline: 1.5rem; }
-  .compose-shell { display: grid; align-content: center; padding-bottom: 8vh; }
-  .compose-shell .app-header { position: absolute; top: 1.5rem; }
-  .compose-view { max-width: 37rem; margin-inline: auto; }
+
   .job-shell,
   .problem-shell { padding-top: 1.5rem; }
   .choice-action-bar { position: sticky; bottom: 1rem; margin-top: 1.5rem; border: 1px solid var(--line); border-radius: var(--radius-surface); padding: 0.8rem; background: var(--surface); backdrop-filter: none; }

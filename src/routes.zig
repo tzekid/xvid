@@ -148,6 +148,7 @@ fn jobEvents(app: *App, request: *std.http.Server.Request, id: []const u8) !void
         const snapshot = (try app.registry.snapshot(arena_state.allocator(), id)) orelse {
             try response.writer.writeAll("event: deleted\ndata: deleted\n\n");
             try response.writer.flush();
+            try response.flush();
             break;
         };
         if (snapshot.revision != last_revision) {
@@ -158,15 +159,18 @@ fn jobEvents(app: *App, request: *std.http.Server.Request, id: []const u8) !void
             try writeSseData(&response.writer, fragment.buffered());
             try response.writer.writeByte('\n');
             try response.writer.flush();
+            try response.flush();
             last_revision = snapshot.revision;
             if (snapshot.data.state.terminal()) {
                 try response.writer.writeAll("event: done\ndata: done\n\n");
                 try response.writer.flush();
+                try response.flush();
                 break;
             }
         } else if (ticks > 0 and ticks % 200 == 0) {
             try response.writer.writeAll(": keep-alive\n\n");
             try response.writer.flush();
+            try response.flush();
         }
         sleepMilliseconds(50);
     }
@@ -653,7 +657,7 @@ fn responseHeaders(content_type: []const u8, cache_control: []const u8) [7]std.h
         .{ .name = "content-type", .value = content_type },
         .{ .name = "cache-control", .value = cache_control },
         .{ .name = "x-content-type-options", .value = "nosniff" },
-        .{ .name = "referrer-policy", .value = "no-referrer" },
+        .{ .name = "referrer-policy", .value = "same-origin" },
         .{ .name = "x-frame-options", .value = "DENY" },
         .{ .name = "permissions-policy", .value = "camera=(), microphone=(), geolocation=(), clipboard-read=(self), clipboard-write=(self)" },
         .{ .name = "content-security-policy", .value = "default-src 'self'; base-uri 'none'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data:; object-src 'none'; script-src 'self'; style-src 'self'; manifest-src 'self'" },

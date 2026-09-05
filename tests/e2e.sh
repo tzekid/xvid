@@ -218,6 +218,30 @@ assert_status() {
   }
 }
 
+assert_composer() {
+  python3 - "$1" <<'PYCOMPOSER'
+from html.parser import HTMLParser
+import sys
+class Page(HTMLParser):
+    forms = 0
+    inputs = 0
+    buttons = 0
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == 'form' and 'data-link-form' in attrs:
+            assert attrs.get('action') == '/jobs' and attrs.get('method') == 'post'
+            self.forms += 1
+        if tag == 'input' and attrs.get('id') == 'url':
+            assert not attrs.get('value')
+            self.inputs += 1
+        if tag == 'button' and 'data-basic-submit' in attrs:
+            self.buttons += 1
+page = Page()
+page.feed(open(sys.argv[1]).read())
+assert (page.forms, page.inputs, page.buttons) == (1, 1, 1)
+PYCOMPOSER
+}
+
 stage 'start fixture and application'
 start_fixture
 start_server
@@ -228,7 +252,9 @@ usage_db="$xvid_temp/data/usage.sqlite3"
 [[ "$(sqlite3 "$usage_db" "SELECT count(*) FROM pragma_table_info('usage_jobs') WHERE name IN ('source_url','title')")" == 0 ]]
 
 stage 'home and served application assets'
-http -fsS "$xvid_origin/" > "$xvid_temp/home.html"
+http -fsS -D "$xvid_temp/home.headers" "$xvid_origin/" > "$xvid_temp/home.html"
+rg -qi '^referrer-policy: same-origin' "$xvid_temp/home.headers"
+assert_composer "$xvid_temp/home.html"
 rg -q '<main id="app"' "$xvid_temp/home.html"
 rg -q 'data-basic-submit' "$xvid_temp/home.html"
 rg -q 'name="advanced" value="1" data-advanced-submit' "$xvid_temp/home.html"
@@ -264,6 +290,8 @@ assert_status 422 -X POST \
   --data-urlencode 'url=https://example.com/video.mp4' \
   "$xvid_origin/jobs"
 
+assert_composer "$xvid_temp/status-body.html"
+
 stage 'Basic native Original journey'
 basic_location=$(create_job 'https://x.com/fixture/status/2103' 0 "$xvid_temp/basic.headers")
 [[ "$basic_location" == *'?auto=1' ]]
@@ -279,6 +307,7 @@ rg -q '"path": "preview/item-001.png"' "$basic_manifest"
 [[ "$(find "$xvid_temp/data/jobs/$basic_id/preview" -type f | wc -l)" == 1 ]]
 
 http -fsS "$xvid_origin$basic_location" > "$xvid_temp/basic.html"
+assert_composer "$xvid_temp/basic.html"
 rg -q 'data-auto-download' "$xvid_temp/basic.html"
 rg -Fq "poster=\"$basic_path/artifact/file-1?poster=1\"" "$xvid_temp/basic.html"
 if rg -q 'data-events=' "$xvid_temp/basic.html"; then
@@ -326,6 +355,12 @@ advanced_id=$(job_id_from_location "$advanced_location")
 advanced_manifest="$xvid_temp/data/jobs/$advanced_id/job.json"
 wait_for_state "$advanced_manifest" awaiting_choice
 http -fsS "$xvid_origin$advanced_path" > "$xvid_temp/advanced.html"
+assert_composer "$xvid_temp/advanced.html"
+# A nonterminal event must arrive while the stream is still open.
+# Flushing only the body writer leaves it buffered at the connection layer.
+http -sN --max-time 2 "$xvid_origin$advanced_path/events" > "$xvid_temp/choice-events.txt" || [[ "$?" == 28 ]]
+rg -q '^event: job' "$xvid_temp/choice-events.txt"
+rg -q 'data-state="awaiting_choice"' "$xvid_temp/choice-events.txt"
 rg -q 'name="delivery" value="optimise"' "$xvid_temp/advanced.html"
 rg -q 'name="delivery" value="downscale"' "$xvid_temp/advanced.html"
 rg -q 'value="video-720"' "$xvid_temp/advanced.html"
@@ -381,6 +416,7 @@ wait_for_state "$photos_manifest" ready
 http -fsS "$xvid_origin$photos_path/artifact/bundle?download=1" > "$xvid_temp/photos.zip"
 unzip -t "$xvid_temp/photos.zip" >/dev/null
 http -fsS "$xvid_origin$photos_path" > "$xvid_temp/photos.html"
+assert_composer "$xvid_temp/photos.html"
 rg -Fq "$photos_path/artifact/bundle?download=1" "$xvid_temp/photos.html"
 rg -q 'data-share-photos hidden' "$xvid_temp/photos.html"
 delete_job "$photos_path"
@@ -394,6 +430,7 @@ private_manifest="$xvid_temp/data/jobs/$private_id/job.json"
 wait_for_state "$private_manifest" failed
 rg -q '"code": "X_PRIVATE"' "$private_manifest"
 http -fsS "$xvid_origin$private_path" > "$xvid_temp/private.html"
+assert_composer "$xvid_temp/private.html"
 delete_job "$private_path"
 wait_for_absence "$xvid_temp/data/jobs/$private_id"
 
