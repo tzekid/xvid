@@ -374,7 +374,7 @@ progress::-moz-progress-bar { border-radius: 1rem; background: var(--accent); }
   .compose-copy p { margin-top: 1.75rem; font-size: 1.0625rem; }
   .compose-shell .persistent-composer { padding: 2rem; }
   .compose-shell > .privacy-note { margin-top: 3rem; }
-  .job-shell, .problem-shell { display: grid; grid-template-columns: minmax(17rem, 0.72fr) minmax(0, 1.28fr); grid-template-rows: auto 1fr; column-gap: 3.5rem; align-content: start; }
+  .job-shell, .problem-shell { display: grid; grid-template-columns: minmax(0, 0.72fr) minmax(0, 1.28fr); grid-template-rows: auto 1fr; column-gap: 3.5rem; align-content: start; }
   .job-shell .app-header, .problem-shell .app-header { grid-column: 1 / -1; margin-bottom: 3rem; }
   .job-shell > .persistent-composer, .problem-shell > .persistent-composer { position: sticky; top: 2rem; align-self: start; grid-column: 1; grid-row: 2; margin: 0; border: 1px solid var(--line); border-radius: var(--radius-surface); padding: 1.5rem; background: var(--soft); }
   .job-shell .link-form, .problem-shell .link-form { grid-template-columns: minmax(0, 1fr); }
