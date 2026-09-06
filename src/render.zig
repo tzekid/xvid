@@ -2,12 +2,12 @@ const std = @import("std");
 const job_mod = @import("job.zig");
 
 const maximum_share_bytes = 64 * 1024 * 1024;
-const asset_version = "4";
+const asset_version = "5";
 
 const link_composer =
     \\<div class="persistent-composer">
     \\      <form class="link-form" action="/jobs" method="post" data-link-form data-nav-form>
-    \\        <label for="url">Public X post link</label>
+    \\        <label for="url">Public X or Instagram post link</label>
     \\        <div class="url-control">
     \\          <input id="url" name="url" type="url" inputmode="url" autocomplete="url" autocapitalize="none" autocorrect="off" spellcheck="false" required maxlength="4096" placeholder="https://x.com/…/status/…" aria-describedby="link-error">
     \\          <button class="clear-input" type="button" data-clear-input hidden aria-label="Clear link">×</button>
@@ -28,12 +28,12 @@ pub const home =
     \\  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
     \\  <meta name="theme-color" content="#0b0b0b" media="(prefers-color-scheme: dark)">
     \\  <title>xvid</title>
-    \\  <meta name="description" content="Save photos and videos from public X posts.">
+    \\  <meta name="description" content="Save selected photos and videos from public X and Instagram posts.">
     \\  <link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
     \\  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
     \\  <link rel="manifest" href="/manifest.webmanifest">
-    \\  <link rel="stylesheet" href="/assets/app.css?v=4">
-    \\  <script src="/assets/app.js?v=4" defer></script>
+    \\  <link rel="stylesheet" href="/assets/app.css?v=5">
+    \\  <script src="/assets/app.js?v=5" defer></script>
     \\</head>
     \\<body>
     \\  <main id="app" class="app-shell compose-shell" data-page-state="compose">
@@ -41,11 +41,11 @@ pub const home =
 ++ link_composer ++
     \\    <section class="compose-view" aria-labelledby="compose-title">
     \\      <div class="compose-copy">
-    \\        <h1 id="compose-title">Save media from an X link</h1>
-    \\        <p>Photos and videos from public X or Twitter posts. Files remain temporary.</p>
+    \\        <h1 id="compose-title">Save the media you want</h1>
+    \\        <p>X posts save immediately. Instagram carousels let you pick one item. Files remain temporary.</p>
     \\      </div>
     \\    </section>
-    \\      <p id="link-help" class="privacy-note">Public status links only · no accounts · files expire automatically</p>
+    \\      <p id="link-help" class="privacy-note">Public posts only · no accounts · files expire automatically</p>
     \\  </main>
     \\</body>
     \\</html>
@@ -131,7 +131,8 @@ pub fn errorPage(writer: *std.Io.Writer, title: []const u8, message: []const u8)
 
 fn renderSourceSummary(writer: *std.Io.Writer, snapshot: job_mod.Snapshot) !void {
     if (snapshot.data.probe) |probe| {
-        try writer.writeAll("<header class=\"source-summary\"><p class=\"source-meta\">X");
+        try writer.writeAll("<header class=\"source-summary\"><p class=\"source-meta\">");
+        try writer.writeAll(if (probe.engine == .instagram_native) "Instagram" else "X");
         if (probe.item_count > 1) {
             try writer.writeAll(" · ");
             try writer.print("{d} items", .{probe.item_count});
@@ -190,6 +191,7 @@ fn renderProgress(writer: *std.Io.Writer, snapshot: job_mod.Snapshot, fallback_l
 
 fn renderChoice(writer: *std.Io.Writer, snapshot: job_mod.Snapshot) !void {
     const probe = snapshot.data.probe orelse return;
+    if (probe.instagram_plan) |plan| return renderInstagramPicker(writer, snapshot, plan);
     try writer.writeAll("<form class=\"choice-form\" method=\"post\" action=\"");
     try jobUrl(writer, snapshot.data.id, "start");
     try writer.writeAll("\" data-nav-form data-choice-form><div class=\"choice-heading\"><p class=\"section-kicker\">Choose what to save</p><h2>Available options</h2><p>Only choices that change the resulting file are shown.</p></div>");
@@ -532,4 +534,38 @@ test "downscale targets remain below the source" {
     try std.testing.expectEqual(@as(?u32, 1080), firstLowerTarget(1440));
     try std.testing.expectEqual(@as(?u32, 360), firstLowerTarget(480));
     try std.testing.expect(firstLowerTarget(240) == null);
+}
+
+fn renderInstagramPicker(writer: *std.Io.Writer, snapshot: job_mod.Snapshot, plan: @import("instagram_plan.zig").Plan) !void {
+    try writer.writeAll("<section class=\"instagram-picker\" aria-labelledby=\"instagram-title\"><p class=\"section-kicker\">Choose what to save</p><h2 id=\"instagram-title\">Tap one photo or video</h2><p>Only the item you choose will be downloaded. No cover image is substituted for a video.</p><div class=\"instagram-grid\">");
+    for (plan.items) |item| {
+        try writer.print("<article class=\"instagram-item{s}\" id=\"instagram-item-{d}\">", .{ if (plan.highlighted_ordinal == item.ordinal) " is-suggested" else "", item.ordinal });
+        if (item.thumbnail_url != null) {
+            try writer.writeAll("<img class=\"instagram-thumbnail\" loading=\"lazy\" decoding=\"async\" referrerpolicy=\"no-referrer\" src=\"");
+            try jobUrl(writer, snapshot.data.id, "thumbnail/");
+            try escapeAttribute(writer, item.id);
+            try writer.print("\" alt=\"Preview of item {d}\">", .{item.ordinal});
+        } else try writer.writeAll("<div class=\"instagram-thumbnail instagram-placeholder\">Preview unavailable</div>");
+        try writer.print("<p class=\"source-meta\">{d} of {d} · {s}", .{ item.ordinal, plan.items.len, switch (item.kind) {
+            .image => @as([]const u8, "Photo"),
+            .video => "Video",
+            .unknown => "Unavailable item",
+        } });
+        if (item.duration_ms) |duration| {
+            try writer.writeAll(" · ");
+            try formatDuration(writer, duration / 1000);
+        }
+        try writer.writeAll("</p>");
+        if (plan.highlighted_ordinal == item.ordinal) try writer.writeAll("<p class=\"instagram-hint\">Item referenced by your link</p>");
+        if (item.available()) {
+            try writer.writeAll("<form method=\"post\" data-nav-form action=\"");
+            try jobUrl(writer, snapshot.data.id, "start");
+            try writer.writeAll("\"><button class=\"primary-action\" type=\"submit\" name=\"item_id\" value=\"");
+            try escapeAttribute(writer, item.id);
+            try writer.print("\">Save this {s}</button></form>", .{if (item.kind == .video) @as([]const u8, "video") else "photo"});
+        } else try writer.writeAll("<p>This item is unavailable. Its position in the post has been preserved.</p>");
+        try writer.writeAll("</article>");
+    }
+    try writer.writeAll("</div></section>");
+    try renderCancel(writer, snapshot.data.id);
 }

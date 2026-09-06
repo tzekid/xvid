@@ -2,9 +2,11 @@ const std = @import("std");
 const Config = @import("config.zig").Config;
 const job_mod = @import("job.zig");
 const x = @import("x.zig");
+const instagram = @import("instagram.zig");
 
 pub const Shared = struct {
     x_guest_tokens: x.GuestTokenCache = .{},
+    instagram: instagram.Shared = .{},
 };
 
 pub const Context = struct {
@@ -13,6 +15,7 @@ pub const Context = struct {
     environment: *const std.process.Environ.Map,
     shared: *Shared,
     x_client: x.Client,
+    instagram_client: instagram.Client,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -27,11 +30,13 @@ pub const Context = struct {
             .environment = environment,
             .shared = shared,
             .x_client = x.Client.init(allocator, io, config, &shared.x_guest_tokens),
+            .instagram_client = instagram.Client.init(allocator, io, config, &shared.instagram),
         };
     }
 
     pub fn deinit(context: *Context) void {
         context.x_client.deinit();
+        context.instagram_client.deinit();
     }
 };
 
@@ -48,6 +53,7 @@ pub fn probe(
     cancel: ?*const std.atomic.Value(bool),
 ) !job_mod.Probe {
     if (cancelled(cancel)) return error.Cancelled;
+    if (instagram.matches(source_url)) return instagram.probe(allocator, &context.instagram_client, source_url, cancel);
     if (!x.matches(source_url)) return error.UnsupportedUrl;
     const diagnostic = x.probeDiagnostic(allocator, &context.x_client, source_url) catch |native_error| {
         logMetadataFailure(job_id, native_error, &context.x_client);
@@ -118,6 +124,7 @@ pub fn acquire(
 ) !job_mod.Acquisition {
     _ = job_id;
     _ = source_url;
+    if (probe_result.engine == .instagram_native) return instagram.acquire(result_allocator, scratch_allocator, &context.instagram_client, context.environment, job_root, probe_result, selection, cancel, .{ .context = progress_callback.context, .update = progress_callback.update });
     if (probe_result.engine != .x_native) return error.SourceEngineRetired;
     return x.acquire(
         result_allocator,
@@ -130,4 +137,8 @@ pub fn acquire(
         cancel,
         .{ .context = progress_callback.context, .update = progress_callback.update },
     );
+}
+
+pub fn matches(url: []const u8) bool {
+    return x.matches(url) or instagram.matches(url);
 }

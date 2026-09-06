@@ -55,7 +55,11 @@ pub fn build(b: *std.Build) void {
     e2e.addArtifactArg(fixture_ffmpeg);
     e2e.addArtifactArg(fixture_ffprobe);
     e2e.addArtifactArg(fixture_x_server);
-    b.step("e2e", "Run native-X real-process end-to-end journeys").dependOn(&e2e.step);
+    const e2e_step = b.step("e2e", "Run X and Instagram real-process end-to-end journeys");
+    e2e_step.dependOn(&e2e.step);
+    const instagram_e2e = b.addSystemCommand(&.{ "python3", "tests/instagram_e2e.py" });
+    instagram_e2e.addArtifactArg(executable);
+    e2e_step.dependOn(&instagram_e2e.step);
 }
 
 fn applicationModule(

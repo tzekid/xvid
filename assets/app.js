@@ -45,13 +45,14 @@
     }
   }
 
-  const xStatusUrl = (value) => {
+  const supportedPostUrl = (value) => {
     const candidate = firstUrl(value)
     if (!candidate) return null
     try {
       const url = new URL(candidate)
-      return xHosts.has(url.hostname.toLowerCase()) &&
-        /\/status\/\d{1,24}(?:\/(?:video|photo)\/\d+)?\/?$/.test(url.pathname)
+      const isX = xHosts.has(url.hostname.toLowerCase()) && /\/status\/\d{1,24}(?:\/(?:video|photo)\/\d+)?\/?$/.test(url.pathname)
+      const isInstagram = ['instagram.com', 'www.instagram.com', 'm.instagram.com'].includes(url.hostname.toLowerCase()) && /^\/(?:p|reel|reels|tv|share)\/[A-Za-z0-9_-]{1,64}\/?$/.test(url.pathname)
+      return (isX || isInstagram) && !url.username && !url.password
         ? url.href
         : null
     } catch {
@@ -222,7 +223,7 @@
     }
     input.addEventListener('input', refresh)
     input.addEventListener('paste', (event) => {
-      const candidate = xStatusUrl(event.clipboardData?.getData('text') || '')
+      const candidate = supportedPostUrl(event.clipboardData?.getData('text') || '')
       if (!candidate) return
       event.preventDefault()
       input.value = candidate
@@ -238,7 +239,7 @@
       event.preventDefault()
       basic.disabled = true
       try {
-        const candidate = xStatusUrl(await navigator.clipboard.readText())
+        const candidate = supportedPostUrl(await navigator.clipboard.readText())
         if (!candidate) throw new Error()
         input.value = candidate
         refresh()
@@ -246,7 +247,7 @@
         form.requestSubmit(basic)
       } catch {
         if (error) {
-          error.textContent = 'Clipboard access was blocked or did not contain a public X status link.'
+          error.textContent = 'Clipboard access was blocked or did not contain a public X or Instagram post link.'
           error.hidden = false
         }
         input.focus()
@@ -641,15 +642,15 @@
     }
     const input = form.querySelector('#url')
     if (input) {
-      const candidate = xStatusUrl(input.value)
+      const candidate = supportedPostUrl(input.value)
       if (!candidate) {
         event.preventDefault()
         const error = form.querySelector('[data-link-error]')
         if (error) {
-          error.textContent = 'Use a public X or Twitter status link.'
+          error.textContent = 'Use a public X status link or Instagram post/Reel.'
           error.hidden = false
         }
-        input.setCustomValidity('Use a public X or Twitter status link.')
+        input.setCustomValidity('Use a public X status link or Instagram post/Reel.')
         input.reportValidity()
         input.focus()
         return

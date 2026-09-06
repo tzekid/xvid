@@ -1,10 +1,10 @@
 # xvid
 
 xvid is a small, mobile-first utility for saving photos and videos from public
-X/Twitter status links.
+X/Twitter status links and public Instagram posts/Reels.
 
-Production is one Zig executable behind Caddy. It resolves X metadata natively,
-downloads from the reviewed X media hosts, validates videos with FFprobe, and
+Production is one Zig executable behind Caddy. It resolves X and Instagram metadata natively,
+downloads from reviewed X and Instagram media hosts, validates videos with FFprobe, and
 uses FFmpeg only when the user asks for a compatible or smaller MP4. Jobs are
 temporary filesystem directories; normalized usage records live in SQLite.
 
@@ -14,6 +14,12 @@ temporary filesystem directories; normalized usage records live in SQLite.
   save or share it. There is no format-choice screen.
 - **Advanced:** inspect the post, choose an available source quality, then keep
   the source or prepare a compatible/smaller MP4.
+
+Instagram carousels first show an ordered picker. Tap **Save this photo/video**
+to acquire only that child; unselected full-size files are not downloaded.
+Single-item Instagram posts retain the automatic Basic journey. Access is
+logged-out and provider-dependent: challenges, incomplete metadata and unavailable
+items are reported explicitly. See [Instagram scope and verification](docs/instagram/UPSTREAM.md).
 
 The server renders normal HTML forms. JavaScript adds live updates, clipboard
 handling, automatic desktop downloads, and the bounded iOS share action. The
@@ -26,7 +32,7 @@ browser
   -> Caddy
   -> xvid
        -> X GraphQL, with syndication fallback
-       -> pbs.twimg.com / video.twimg.com
+       -> reviewed X / Instagram media hosts
        -> FFprobe
        -> optional FFmpeg
        -> temporary job files + usage.sqlite3

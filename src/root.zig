@@ -14,3 +14,8 @@ test {
     _ = @import("work_claims.zig");
     _ = @import("x.zig");
 }
+
+test {
+    _ = @import("instagram_plan.zig");
+    _ = @import("instagram.zig");
+}

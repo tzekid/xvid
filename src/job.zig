@@ -1,4 +1,5 @@
 const std = @import("std");
+const instagram_plan = @import("instagram_plan.zig");
 
 pub const manifest_version: u32 = 2;
 pub const id_bytes: usize = 16;
@@ -22,7 +23,7 @@ pub const State = enum {
 };
 
 pub const Intent = enum { inspect, save_original };
-pub const SourceEngine = enum { x_native, ytdlp };
+pub const SourceEngine = enum { x_native, instagram_native, ytdlp };
 pub const MediaKind = enum { video, audio, image, mixed, unknown };
 pub const SelectionKind = enum { all, video, audio, image };
 pub const XMediaKind = enum { photo, video, animated_gif };
@@ -76,6 +77,7 @@ pub const Probe = struct {
     video_count: u8 = 0,
     image_count: u8 = 0,
     x_plan: ?XPlan = null,
+    instagram_plan: ?instagram_plan.Plan = null,
 };
 
 pub const Acquisition = struct {
@@ -85,6 +87,7 @@ pub const Acquisition = struct {
 };
 
 pub const Selection = struct {
+    item_id: ?[]const u8 = null,
     kind: SelectionKind,
     variant_id: ?[]const u8 = null,
     label: []const u8,
@@ -314,13 +317,22 @@ pub fn validateData(data: Data, directory_id: []const u8) !void {
 pub fn validateProbe(probe: Probe) !void {
     if (probe.title.len == 0 or probe.title.len > 1024 or probe.source_host.len == 0 or probe.source_host.len > 253) return error.InvalidProbe;
     if (!std.unicode.utf8ValidateSlice(probe.title)) return error.InvalidProbe;
-    if (probe.item_count == 0 or probe.item_count > max_media_items or probe.variants.len > 32) return error.InvalidProbe;
+    if (probe.item_count == 0 or probe.item_count > (if (probe.engine == .instagram_native) instagram_plan.maximum_items else max_media_items) or probe.variants.len > 32) return error.InvalidProbe;
     for (probe.variants) |variant| if (variant.id.len == 0 or variant.id.len > 128 or variant.label.len == 0 or variant.label.len > 256) return error.InvalidProbe;
     if (@as(usize, probe.video_count) + @as(usize, probe.image_count) > probe.item_count) return error.InvalidProbe;
     if (probe.thumbnail_url) |thumbnail_url| if (!validPersistedUrl(thumbnail_url)) return error.InvalidProbe;
     switch (probe.engine) {
-        .x_native => try validateXProbe(probe),
-        .ytdlp => if (probe.x_plan != null) return error.InvalidProbe,
+        .instagram_native => {
+            if (probe.x_plan != null) return error.InvalidProbe;
+            const plan = probe.instagram_plan orelse return error.InvalidProbe;
+            try plan.validate();
+            if (plan.items.len != probe.item_count) return error.InvalidProbe;
+        },
+        .x_native => {
+            if (probe.instagram_plan != null) return error.InvalidProbe;
+            try validateXProbe(probe);
+        },
+        .ytdlp => if (probe.x_plan != null or probe.instagram_plan != null) return error.InvalidProbe,
     }
 }
 
@@ -363,6 +375,10 @@ fn validateXProbe(probe: Probe) !void {
 
 pub fn validateStart(probe: Probe, selection: Selection, delivery: Delivery) !void {
     try validateSelection(probe, selection);
+    if (probe.engine == .instagram_native) {
+        if (delivery.mode != .original or delivery.target_height != null) return error.InvalidDelivery;
+        return;
+    }
     if (delivery.mode == .downscale) {
         const target = delivery.target_height orelse return error.InvalidDelivery;
         if (target < 144 or probe.source_height == null or target >= probe.source_height.?) return error.InvalidDelivery;
@@ -372,6 +388,13 @@ pub fn validateStart(probe: Probe, selection: Selection, delivery: Delivery) !vo
 
 fn validateSelection(probe: Probe, selection: Selection) !void {
     if (selection.label.len == 0 or selection.label.len > 256) return error.InvalidSelection;
+    if (probe.engine == .instagram_native) {
+        const plan = probe.instagram_plan orelse return error.InvalidSelection;
+        const item = plan.find(selection.item_id orelse return error.InvalidSelection) orelse return error.InvalidSelection;
+        if (!item.available() or selection.variant_id != null or selection.kind != (if (item.kind == .video) SelectionKind.video else SelectionKind.image)) return error.InvalidSelection;
+        return;
+    }
+    if (selection.item_id != null) return error.InvalidSelection;
     switch (selection.kind) {
         .all => if (probe.engine != .x_native or probe.item_count < 2 or probe.media_kind != .mixed) return error.InvalidSelection,
         .video => {
@@ -466,12 +489,14 @@ pub fn cloneProbe(allocator: std.mem.Allocator, probe: Probe) !Probe {
         .video_count = probe.video_count,
         .image_count = probe.image_count,
         .x_plan = if (probe.x_plan) |plan| try cloneXPlan(allocator, plan) else null,
+        .instagram_plan = if (probe.instagram_plan) |plan| try plan.clone(allocator) else null,
     };
 }
 
 pub fn cloneSelection(allocator: std.mem.Allocator, selection: Selection) !Selection {
     return .{
         .kind = selection.kind,
+        .item_id = if (selection.item_id) |value| try allocator.dupe(u8, value) else null,
         .variant_id = if (selection.variant_id) |value| try allocator.dupe(u8, value) else null,
         .label = try allocator.dupe(u8, selection.label),
     };
@@ -507,6 +532,11 @@ fn cloneXPlan(allocator: std.mem.Allocator, plan: XPlan) !XPlan {
 }
 
 pub fn defaultOriginalSelection(allocator: std.mem.Allocator, probe: Probe) !Selection {
+    if (probe.engine == .instagram_native) {
+        const plan = probe.instagram_plan orelse return error.InvalidSelection;
+        if (plan.items.len != 1 or !plan.items[0].available()) return error.InstagramSelectionRequired;
+        return .{ .kind = if (plan.items[0].kind == .video) .video else .image, .item_id = try allocator.dupe(u8, plan.items[0].id), .label = try allocator.dupe(u8, "Selected original item") };
+    }
     return switch (probe.media_kind) {
         .mixed => .{
             .kind = .all,
