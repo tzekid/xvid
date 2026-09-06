@@ -93,7 +93,7 @@ fn loopbackHost(host: []const u8) bool {
 }
 
 fn hostSuffix(host: []const u8, suffix: []const u8) bool {
-    return std.ascii.eqlIgnoreCase(host, suffix) or (host.len > suffix.len and host[host.len - suffix.len - 1] == '.' and std.ascii.endsWithIgnoreCase(host, suffix));
+    return std.ascii.eqlIgnoreCase(host, suffix) or (host.len > suffix.len and host[host.len - suffix.len - 1] == '.' and std.ascii.endsWithIgnoreCase(host[host.len - suffix.len ..], suffix));
 }
 
 pub fn allowedUrl(config: *const Config, raw: []const u8, metadata: bool) bool {
@@ -251,10 +251,26 @@ fn fetch(client: *Client, allocator: std.mem.Allocator, url: []const u8, method:
     return result;
 }
 
+const Search = struct {
+    best: ?job.Probe = null,
+    required_count: usize = 0,
+};
+
+fn preferProbe(search: *Search, candidate: job.Probe) void {
+    if (search.best == null or candidate.item_count > search.best.?.item_count) search.best = candidate;
+}
+
+fn completeSearch(search: Search) ?job.Probe {
+    const best = search.best orelse return null;
+    return if (best.item_count >= search.required_count) best else null;
+}
+
 fn parsePage(allocator: std.mem.Allocator, config: *const Config, shortcode: []const u8, bytes: []const u8, now_value: i64, hint: ?u8) !?job.Probe {
     if (bytes.len > maximum_metadata) return error.InstagramResponseTooLarge;
-    const trimmed = std.mem.trim(u8, bytes, " \t\r\n");
-    if (trimmed.len > 0 and (trimmed[0] == '{' or trimmed[0] == '[')) return parseJsonPost(allocator, config, shortcode, trimmed, now_value, hint);
+    var trimmed = std.mem.trim(u8, bytes, " \t\r\n");
+    if (std.mem.startsWith(u8, trimmed, "for (;;);")) trimmed = std.mem.trimStart(u8, trimmed[9..], " \t\r\n");
+    if (trimmed.len > 0 and (trimmed[0] == '{' or trimmed[0] == '[')) return completeSearch(try parseJsonPost(allocator, config, shortcode, trimmed, now_value, hint));
+    var search = Search{};
     var position: usize = 0;
     var scripts: usize = 0;
     while (std.mem.indexOfPos(u8, bytes, position, "<script")) |start| {
@@ -265,38 +281,51 @@ fn parsePage(allocator: std.mem.Allocator, config: *const Config, shortcode: []c
         position = content_end + 9;
         const content = std.mem.trim(u8, bytes[content_start..content_end], " \t\r\n");
         if (content.len == 0 or (content[0] != '{' and content[0] != '[')) continue;
-        if (try parseJsonPost(allocator, config, shortcode, content, now_value, hint)) |post| return post;
+        const candidate = try parseJsonPost(allocator, config, shortcode, content, now_value, hint);
+        search.required_count = @max(search.required_count, candidate.required_count);
+        if (candidate.best) |post| preferProbe(&search, post);
     }
-    return null;
+    return completeSearch(search);
 }
 
-fn parseJsonPost(allocator: std.mem.Allocator, config: *const Config, shortcode: []const u8, bytes: []const u8, now_value: i64, hint: ?u8) !?job.Probe {
-    // Free parse trees after every script; repeated unrelated script blocks must
-    // not accumulate in the long-lived request arena.
+fn parseJsonPost(allocator: std.mem.Allocator, config: *const Config, shortcode: []const u8, bytes: []const u8, now_value: i64, hint: ?u8) !Search {
+    // Pages can contain a cover, an incomplete hydration stub and the complete
+    // carousel in different objects/scripts. A first-match parser is unsafe.
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
-    const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), bytes, .{ .max_value_len = maximum_metadata }) catch return null;
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), bytes, .{ .max_value_len = maximum_metadata }) catch return .{};
     var remaining: usize = 100_000;
-    const found = try findPost(parsed, shortcode, 0, &remaining) orelse return null;
-    return try normalize(allocator, config, shortcode, found, now_value, hint);
+    var search = Search{};
+    try findPost(arena.allocator(), config, parsed, shortcode, now_value, hint, 0, &remaining, &search);
+    if (search.best) |best| search.best = try job.cloneProbe(allocator, best);
+    return search;
 }
 
-fn findPost(value: std.json.Value, shortcode: []const u8, depth: usize, remaining: *usize) error{InstagramResponseTooLarge}!?std.json.ObjectMap {
+fn findPost(allocator: std.mem.Allocator, config: *const Config, value: std.json.Value, shortcode: []const u8, now_value: i64, hint: ?u8, depth: usize, remaining: *usize, search: *Search) anyerror!void {
     if (depth > 64 or remaining.* == 0) return error.InstagramResponseTooLarge;
     remaining.* -= 1;
     switch (value) {
         .object => |object| {
             const code = text(object.get("code")) orelse text(object.get("shortcode"));
-            if (code) |candidate| if (std.mem.eql(u8, candidate, shortcode) and (object.contains("media_type") or object.contains("__typename") or object.contains("carousel_media") or object.contains("video_versions") or object.contains("image_versions2"))) return object;
+            if (code) |candidate| if (std.mem.eql(u8, candidate, shortcode) and (object.contains("media_type") or object.contains("__typename") or object.contains("carousel_media") or object.contains("video_versions") or object.contains("image_versions2"))) {
+                const carousel = number(object.get("media_type")) == 8 or equal(text(object.get("__typename")), "GraphSidecar") or equal(text(object.get("product_type")), "carousel_container") or object.contains("carousel_media") or object.contains("edge_sidecar_to_children");
+                const count = number(object.get("carousel_media_count")) orelse if (carousel) @as(u64, 2) else 1;
+                if (count > plan_mod.maximum_items) return error.InstagramTooManyItems;
+                search.required_count = @max(search.required_count, @as(usize, @intCast(count)));
+                const normalized: ?job.Probe = normalize(allocator, config, shortcode, object, now_value, hint) catch |err| switch (err) {
+                    error.InstagramMetadataIncomplete, error.InstagramNoMedia => null,
+                    else => return err,
+                };
+                if (normalized) |probe_result| preferProbe(search, probe_result);
+            };
             var iterator = object.iterator();
-            while (iterator.next()) |entry| if (try findPost(entry.value_ptr.*, shortcode, depth + 1, remaining)) |post| return post;
+            while (iterator.next()) |entry| try findPost(allocator, config, entry.value_ptr.*, shortcode, now_value, hint, depth + 1, remaining, search);
         },
         .array => |entries| for (entries.items) |entry| {
-            if (try findPost(entry, shortcode, depth + 1, remaining)) |post| return post;
+            try findPost(allocator, config, entry, shortcode, now_value, hint, depth + 1, remaining, search);
         },
         else => {},
     }
-    return null;
 }
 
 fn normalize(allocator: std.mem.Allocator, config: *const Config, shortcode: []const u8, object: std.json.ObjectMap, now_value: i64, hint: ?u8) !job.Probe {
@@ -327,8 +356,8 @@ fn normalize(allocator: std.mem.Allocator, config: *const Config, shortcode: []c
         const node = if (edges) obj(wrapper.get("node")) orelse return error.InstagramMetadataIncomplete else wrapper;
         items[index] = try normalizeItem(allocator, config, node, @intCast(index + 1));
         switch (items[index].kind) {
-            .image => image_count += 1,
-            .video => video_count += 1,
+            .image => image_count += 1;
+            .video => video_count += 1;
             .unknown => {},
         }
         if (items[index].available()) available += 1;
@@ -686,9 +715,9 @@ test "Instagram metadata cannot turn a video or incomplete carousel into a cover
     defer arena.deinit();
     const config = Config{};
     const incomplete = "{\"code\":\"AbC\",\"media_type\":8,\"carousel_media_count\":3,\"image_versions2\":{\"candidates\":[]}}";
-    try std.testing.expectError(error.InstagramMetadataIncomplete, parsePage(arena.allocator(), &config, "AbC", incomplete, 1, null));
+    try std.testing.expect((try parsePage(arena.allocator(), &config, "AbC", incomplete, 1, null)) == null);
     const video = "{\"code\":\"AbC\",\"pk\":\"11\",\"media_type\":2,\"image_versions2\":{\"candidates\":[{\"url\":\"https://s.cdninstagram.com/poster.jpg\",\"width\":1080,\"height\":1080}]}}";
-    try std.testing.expectError(error.InstagramNoMedia, parsePage(arena.allocator(), &config, "AbC", video, 1, null));
+    try std.testing.expect((try parsePage(arena.allocator(), &config, "AbC", video, 1, null)) == null);
 }
 
 test "Instagram signed URLs are preserved and unrelated recommendations ignored" {
