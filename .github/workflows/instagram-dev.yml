@@ -1,0 +1,27 @@
+name: Instagram development snapshot
+on:
+  push:
+    branches: [codex/instagram-selection]
+    paths: [.github/workflows/instagram-dev.yml]
+permissions:
+  contents: read
+jobs:
+  snapshot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0-dev.1963+e00c6c439
+      - name: Archive source and pinned compiler
+        run: |
+          mkdir -p /tmp/xvid-dev
+          git archive --format=tar HEAD | gzip > /tmp/xvid-dev/source.tar.gz
+          zig_root=$(dirname "$(readlink -f "$(command -v zig)")")
+          tar -C "$zig_root" -czf /tmp/xvid-dev/zig.tar.gz zig lib
+      - uses: actions/upload-artifact@v4
+        with:
+          name: instagram-development-snapshot
+          path: /tmp/xvid-dev/
+          retention-days: 1
