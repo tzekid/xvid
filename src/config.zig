@@ -34,6 +34,8 @@ pub const Config = struct {
     max_media_duration_seconds: u32 = 0,
     ffmpeg: []const u8 = "ffmpeg",
     ffprobe: []const u8 = "ffprobe",
+    instagram_origin: []const u8 = "https://www.instagram.com",
+    instagram_timeout_seconds: u16 = 15,
     x_guest_endpoint: []const u8 = "https://api.x.com/1.1/guest/activate.json",
     x_graphql_endpoint: []const u8 = "https://x.com/i/api/graphql/2ICDjqPd81tulZcYrtpTuQ/TweetResultByRestId",
     x_syndication_endpoint: []const u8 = "https://cdn.syndication.twimg.com/tweet-result",
@@ -80,6 +82,7 @@ pub const Config = struct {
         const one_job_reserve = std.math.add(u64, config.max_download_bytes, config.max_output_bytes) catch return error.InvalidDiskBudget;
         if (config.job_storage_budget_bytes < one_job_reserve or config.minimum_free_bytes == 0) return error.InvalidDiskBudget;
         if (config.ffmpeg.len == 0 or config.ffprobe.len == 0) return error.InvalidToolPath;
+        if (config.instagram_timeout_seconds == 0 or config.instagram_timeout_seconds > 120 or !@import("instagram.zig").validOrigin(config.instagram_origin)) return error.InvalidInstagramConfiguration;
         if (config.x_metadata_timeout_seconds == 0 or config.x_metadata_timeout_seconds > 120) return error.InvalidXMetadataTimeout;
 
         const fixture_mode = endpointIsLoopback(config.x_guest_endpoint) and

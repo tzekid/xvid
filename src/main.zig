@@ -42,6 +42,28 @@ pub fn main(init: std.process.Init) !void {
         try doctor(allocator, init.io, &stdout.interface, config);
         return;
     }
+    if (args.len >= 3 and std.mem.eql(u8, args[1], "instagram-probe")) {
+        const options = try parseXProbeArgs(args[2..]);
+        const config = if (options.config_path) |path| try config_mod.Config.load(allocator, init.io, path) else config_mod.Config{};
+        try config.validate();
+        const instagram = @import("instagram.zig");
+        var shared = instagram.Shared{};
+        var client = instagram.Client.init(init.gpa, init.io, &config, &shared);
+        defer client.deinit();
+        const result = instagram.probe(allocator, &client, options.url, null) catch |err| {
+            const message = instagram.failure(err);
+            try std.json.Stringify.value(.{ .ok = false, .error_code = if (message) |value| value.code else @errorName(err) }, .{}, &stdout.interface);
+            try stdout.interface.writeByte('\n');
+            return err;
+        };
+        const plan = result.instagram_plan.?;
+        const Item = struct { ordinal: u8, kind: @import("instagram_plan.zig").Kind, available: bool, width: ?u32, height: ?u32 };
+        const items = try allocator.alloc(Item, plan.items.len);
+        for (plan.items, 0..) |item, index| items[index] = .{ .ordinal = item.ordinal, .kind = item.kind, .available = item.available(), .width = item.width, .height = item.height };
+        try std.json.Stringify.value(.{ .ok = true, .item_count = result.item_count, .media_kind = result.media_kind, .items = items }, .{ .whitespace = .indent_2 }, &stdout.interface);
+        try stdout.interface.writeByte('\n');
+        return;
+    }
     if (args.len >= 3 and std.mem.eql(u8, args[1], "x-probe")) {
         const options = try parseXProbeArgs(args[2..]);
         const config = if (options.config_path) |path| try config_mod.Config.load(allocator, init.io, path) else config_mod.Config{};
@@ -251,6 +273,7 @@ fn usage(writer: *std.Io.Writer) !void {
         \\Usage:
         \\  xvid serve [--config PATH]
         \\  xvid doctor [--config PATH]
+        \\  xvid instagram-probe <url> [--config PATH] [--json]
         \\  xvid x-probe <x-status-url> [--config PATH] [--json]
         \\  xvid jobs --data PATH
         \\  xvid inspect --data PATH <job-id>

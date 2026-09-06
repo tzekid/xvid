@@ -36,6 +36,12 @@
   "x_graphql_endpoint": "https://x.com/i/api/graphql/2ICDjqPd81tulZcYrtpTuQ/TweetResultByRestId",
   "x_syndication_endpoint": "https://cdn.syndication.twimg.com/tweet-result",
   "x_metadata_timeout_seconds": 15,
-  "x_photo_media_hosts": ["pbs.twimg.com"],
-  "x_video_media_hosts": ["video.twimg.com"]
+  "x_photo_media_hosts": [
+    "pbs.twimg.com"
+  ],
+  "x_video_media_hosts": [
+    "video.twimg.com"
+  ],
+  "instagram_origin": "https://www.instagram.com",
+  "instagram_timeout_seconds": 15
 }

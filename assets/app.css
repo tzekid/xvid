@@ -408,3 +408,13 @@ progress::-moz-progress-bar { border-radius: 1rem; background: var(--accent); }
   progress { border: 1px solid CanvasText; }
   .brand::after, .ready-heading .section-kicker::before { background: CanvasText; }
 }
+
+/* Instagram's picker is a bounded list of ordinary forms, not a client store. */
+.instagram-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; margin-block: 1.5rem; }
+.instagram-item { min-width: 0; border: 1px solid var(--line); border-radius: var(--radius-control); padding: 1rem; }
+.instagram-thumbnail { display: block; width: 100%; height: 20rem; object-fit: contain; background: var(--soft); border-radius: 0.5rem; }
+.instagram-placeholder { display: grid; place-items: center; color: var(--muted); }
+.instagram-item .primary-action { width: 100%; }
+.instagram-item.is-suggested { border: 2px solid var(--accent); }
+.instagram-hint { color: var(--muted); font-size: 0.875rem; }
+@media (max-width: 40rem) { .instagram-grid { grid-template-columns: 1fr; } .instagram-thumbnail { height: min(70vh, 30rem); } }

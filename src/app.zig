@@ -1,4 +1,5 @@
 const std = @import("std");
+const instagram = @import("instagram.zig");
 const Config = @import("config.zig").Config;
 const disk = @import("disk.zig");
 const ffmpeg = @import("ffmpeg.zig");
@@ -30,6 +31,7 @@ pub const App = struct {
     stop_background: std.atomic.Value(bool) = .init(false),
     open_sse: std.atomic.Value(u8) = .init(0),
     open_artifacts: std.atomic.Value(u8) = .init(0),
+    open_instagram_previews: std.atomic.Value(u8) = .init(0),
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io, config: Config) !App {
         try config.validate();
@@ -308,7 +310,7 @@ pub const App = struct {
         };
         if (retained.cancel_requested.load(.acquire)) return;
         var automatic_start: ?job_store.AutomaticStart = null;
-        if (snapshot.data.intent == .save_original) {
+        if (snapshot.data.intent == .save_original and !(probe_result.engine == .instagram_native and probe_result.item_count > 1)) {
             if (!(app.canStartMedia(probe_result.item_count, .original) catch false)) {
                 _ = try app.registry.fail(id, "STORAGE_UNAVAILABLE", "This job cannot start without crossing the configured storage limit.", std.Io.Clock.real.now(app.io).toSeconds(), app.config.terminal_ttl_seconds);
                 app.syncUsage(id);
@@ -449,6 +451,7 @@ const MediaProgress = struct {
 };
 
 fn probeFailure(err: anyerror) struct { code: []const u8, message: []const u8 } {
+    if (instagram.failure(err)) |failure| return .{ .code = failure.code, .message = failure.message };
     return switch (err) {
         error.XPostPrivate => .{ .code = "X_PRIVATE", .message = "This X post is private." },
         error.XLoginRequired => .{ .code = "X_LOGIN_REQUIRED", .message = "X requires a signed-in account for this post." },
@@ -466,6 +469,7 @@ fn probeFailure(err: anyerror) struct { code: []const u8, message: []const u8 } 
 }
 
 fn mediaFailure(err: anyerror) struct { code: []const u8, message: []const u8 } {
+    if (instagram.failure(err)) |failure| return .{ .code = failure.code, .message = failure.message };
     return switch (err) {
         error.XMediaRejected => .{ .code = "SOURCE_REJECTED", .message = "X exposed the media, but its media server rejected the download." },
         error.XMediaRedirectRejected, error.XMediaHostRejected => .{ .code = "SOURCE_REJECTED", .message = "X redirected the media outside the reviewed media hosts." },

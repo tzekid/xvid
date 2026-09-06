@@ -6,6 +6,8 @@ const media_url = @import("url.zig");
 const range_mod = @import("range.zig");
 const usage = @import("usage.zig");
 const x = @import("x.zig");
+const source = @import("source.zig");
+const instagram = @import("instagram.zig");
 
 const app_css = @embedFile("app_css");
 const app_js = @embedFile("app_js");
@@ -17,7 +19,7 @@ const icon_192 = @embedFile("icon_192");
 const icon_512 = @embedFile("icon_512");
 const max_form_bytes: u64 = 16 * 1024;
 const maximum_share_bytes = 64 * 1024 * 1024;
-const asset_version = "3";
+const asset_version = "5";
 
 pub const ClientContext = struct {
     peer_key: u64,
@@ -29,6 +31,7 @@ const Form = struct {
     url: ?[]const u8 = null,
     advanced: ?[]const u8 = null,
     artifacts: ?[]const u8 = null,
+    item_id: ?[]const u8 = null,
     kind: ?[]const u8 = null,
     variant: ?[]const u8 = null,
     delivery: ?[]const u8 = null,
@@ -65,6 +68,7 @@ pub fn dispatch(app: *App, request: *std.http.Server.Request, client: ClientCont
         if ((request.head.method == .GET or request.head.method == .HEAD) and route.action.len == 0) return jobPage(app, arena, request, route.id);
         if (request.head.method == .GET and std.mem.eql(u8, route.action, "events")) return jobEvents(app, request, route.id);
         if ((request.head.method == .GET or request.head.method == .HEAD) and std.mem.startsWith(u8, route.action, "artifact/")) return artifact(app, arena, request, route.id, route.action["artifact/".len..]);
+        if ((request.head.method == .GET or request.head.method == .HEAD) and std.mem.startsWith(u8, route.action, "thumbnail/")) return instagramThumbnail(app, arena, request, route.id, route.action["thumbnail/".len..]);
         if (request.head.method == .POST and std.mem.eql(u8, route.action, "start")) return startJob(app, arena, request, route.id);
         if (request.head.method == .POST and std.mem.eql(u8, route.action, "cancel")) return cancelJob(app, request, route.id);
         if (request.head.method == .POST and std.mem.eql(u8, route.action, "delete")) return deleteJob(app, request, route.id);
@@ -77,17 +81,17 @@ pub fn dispatch(app: *App, request: *std.http.Server.Request, client: ClientCont
 fn createJob(app: *App, arena: std.mem.Allocator, request: *std.http.Server.Request, client: ClientContext) !void {
     const rate_key = clientRateKey(request, client);
     const form = parseRequestForm(arena, request) catch |err| switch (err) {
-        error.BodyTooLarge => return problem(request, .payload_too_large, "Link too long", "Submit one public X status link no longer than 4096 characters."),
-        else => return problem(request, .bad_request, "Invalid form", "Submit one public X or Twitter status link."),
+        error.BodyTooLarge => return problem(request, .payload_too_large, "Link too long", "Submit one public X or Instagram link no longer than 4096 characters."),
+        else => return problem(request, .bad_request, "Invalid form", "Submit one public X status link or Instagram post/Reel."),
     };
-    const source_url = form.url orelse return problem(request, .bad_request, "Missing link", "Paste one public X or Twitter status link.");
+    const source_url = form.url orelse return problem(request, .bad_request, "Missing link", "Paste one public X status link or Instagram post/Reel.");
     const advanced = if (form.advanced) |value|
         if (std.mem.eql(u8, value, "1")) true else return problem(request, .unprocessable_entity, "Invalid choice mode", "Use the normal save action or Choose quality or format.")
     else
         false;
     var host_buffer: [512]u8 = undefined;
-    const validated = media_url.validate(source_url, &host_buffer) catch return problem(request, .unprocessable_entity, "That link is not allowed", "Use a public X or Twitter status link without credentials or a private network address.");
-    if (!x.matches(source_url)) return problem(request, .unprocessable_entity, "This link is not supported", "xvid currently accepts public X and Twitter status links only.");
+    const validated = media_url.validate(source_url, &host_buffer) catch return problem(request, .unprocessable_entity, "That link is not allowed", "Use a public X or Instagram link without credentials or a private network address.");
+    if (!source.matches(source_url)) return problem(request, .unprocessable_entity, "This link is not supported", "Use a public X status link or Instagram post/Reel. Stories and profiles are not supported.");
     if (!(app.hasMinimumFreeSpace() catch false)) return problem(request, .service_unavailable, "Storage is unavailable", "xvid is preserving its configured free-space floor. Try again after existing jobs expire.");
     switch (app.rate_limiter.allow(rate_key, now(app.io))) {
         .allowed => {},
@@ -298,8 +302,29 @@ fn startJob(app: *App, arena: std.mem.Allocator, request: *std.http.Server.Reque
     const locked = app.registry.findLocked(id) orelse return redirect(request, "/");
     defer locked.unlock();
     const job = locked.job;
-    if (job.data.state != .awaiting_choice) return redirectJob(request, id);
+    if (job.data.state != .awaiting_choice) {
+        if (form.item_id) |wanted| if (job.data.selection) |selection| if (selection.item_id) |existing| {
+            if (!std.mem.eql(u8, wanted, existing)) return problem(request, .conflict, "Another item is already selected", "This download has already started. Submit the post again to choose another item.");
+        };
+        return redirectJob(request, id);
+    }
     const probe = job.data.probe orelse return problem(request, .conflict, "The link check is incomplete", "Refresh and use the actions currently shown.");
+    if (probe.engine == .instagram_native) {
+        const plan = probe.instagram_plan orelse return error.InvalidProbe;
+        const item = plan.find(form.item_id orelse return problem(request, .unprocessable_entity, "Choose an item", "Tap the photo or video you want to save.")) orelse return problem(request, .unprocessable_entity, "Unknown item", "Choose an item from this post.");
+        if (!item.available()) return problem(request, .unprocessable_entity, "Item unavailable", "Instagram did not expose a downloadable version of this item.");
+        if (form.delivery) |delivery| if (!std.mem.eql(u8, delivery, "original")) return problem(request, .unprocessable_entity, "Original only", "Instagram downloads preserve the selected source without conversion.");
+        if (form.variant != null or form.target_height != null) return problem(request, .unprocessable_entity, "Invalid item request", "Choose the original item shown.");
+        if (!(app.canStartMedia(1, .original) catch false)) return problem(request, .service_unavailable, "Storage unavailable", "There is not enough bounded storage for the selected item.");
+        const allocator = job.arena.allocator();
+        job.data.selection = .{ .kind = if (item.kind == .video) .video else .image, .item_id = try allocator.dupe(u8, item.id), .label = try std.fmt.allocPrint(allocator, "Item {d} of {d}", .{ item.ordinal, plan.items.len }) };
+        job.data.delivery = .{ .mode = .original };
+        try job.transition(.queued, now(app.io), app.config.terminal_ttl_seconds);
+        job.progress = .{ .phase = .queued, .label = "Waiting for selected item", .updated_at = now(app.io) };
+        try app.registry.persistLocked(job);
+        if (!try app.enqueueMedia(id)) std.log.warn("media_queue_full job_id={s} state=queued recovery=scheduled", .{id});
+        return redirectCreatedJob(request, id, true);
+    }
     if (probe.engine != .x_native) return problem(request, .gone, "This source path was retired", "Check the public X link again with the current native resolver.");
 
     const kind = if (form.kind) |value| std.meta.stringToEnum(job_mod.SelectionKind, value) orelse return problem(request, .unprocessable_entity, "Invalid media choice", "Choose one available media option.") else switch (probe.media_kind) {
@@ -477,7 +502,7 @@ fn parseRequestForm(allocator: std.mem.Allocator, request: *std.http.Server.Requ
         const equals = std.mem.indexOfScalar(u8, pair, '=') orelse pair.len;
         const name = try decodeComponent(allocator, pair[0..equals]);
         const value = try decodeComponent(allocator, if (equals == pair.len) "" else pair[equals + 1 ..]);
-        if (std.mem.eql(u8, name, "url")) try setOnce(&form.url, value) else if (std.mem.eql(u8, name, "advanced")) try setOnce(&form.advanced, value) else if (std.mem.eql(u8, name, "artifacts")) try setOnce(&form.artifacts, value) else if (std.mem.eql(u8, name, "kind")) try setOnce(&form.kind, value) else if (std.mem.eql(u8, name, "variant")) try setOnce(&form.variant, value) else if (std.mem.eql(u8, name, "delivery")) try setOnce(&form.delivery, value) else if (std.mem.eql(u8, name, "target_height")) try setOnce(&form.target_height, value);
+        if (std.mem.eql(u8, name, "url")) try setOnce(&form.url, value) else if (std.mem.eql(u8, name, "advanced")) try setOnce(&form.advanced, value) else if (std.mem.eql(u8, name, "artifacts")) try setOnce(&form.artifacts, value) else if (std.mem.eql(u8, name, "item_id")) try setOnce(&form.item_id, value) else if (std.mem.eql(u8, name, "kind")) try setOnce(&form.kind, value) else if (std.mem.eql(u8, name, "variant")) try setOnce(&form.variant, value) else if (std.mem.eql(u8, name, "delivery")) try setOnce(&form.delivery, value) else if (std.mem.eql(u8, name, "target_height")) try setOnce(&form.target_height, value);
     }
     return form;
 }
@@ -694,4 +719,23 @@ test "cross-site browser mutations are rejected while direct clients remain usab
     try std.testing.expect(!originAllowed("cross-site", "https://evil.example", "https://xvid.example"));
     try std.testing.expect(!originAllowed("same-site", null, "https://xvid.example"));
     try std.testing.expect(originAllowed(null, null, "https://xvid.example"));
+}
+
+fn instagramThumbnail(app: *App, arena: std.mem.Allocator, request: *std.http.Server.Request, id: []const u8, item_id: []const u8) !void {
+    if (!@import("instagram_plan.zig").validId(item_id)) return problem(request, .not_found, "Preview unavailable", "");
+    const previous = app.open_instagram_previews.fetchAdd(1, .acq_rel);
+    defer _ = app.open_instagram_previews.fetchSub(1, .acq_rel);
+    if (previous >= 2) return problem(request, .service_unavailable, "Preview busy", "");
+    const retained = app.registry.retain(id) orelse return problem(request, .not_found, "Preview expired", "");
+    defer retained.release();
+    const snapshot = (try app.registry.snapshot(arena, id)) orelse return problem(request, .not_found, "Preview expired", "");
+    const probe = snapshot.data.probe orelse return problem(request, .not_found, "Preview unavailable", "");
+    const plan = probe.instagram_plan orelse return problem(request, .not_found, "Preview unavailable", "");
+    const item = plan.find(item_id) orelse return problem(request, .not_found, "Preview unavailable", "");
+    if (item.thumbnail_url == null) return problem(request, .not_found, "Preview unavailable", "");
+    var context = source.Context.init(app.allocator, app.io, &app.config, &app.child_environment, &app.source_shared);
+    defer context.deinit();
+    const root = try app.registry.jobPathAlloc(arena, id, "");
+    const preview = instagram.thumbnail(arena, &context.instagram_client, root, plan, item_id) catch return problem(request, .not_found, "Preview unavailable", "The original item can still be selected.");
+    return respondStatic(request, .ok, preview.mime, preview.bytes, "private, max-age=60");
 }
