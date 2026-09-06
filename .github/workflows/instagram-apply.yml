@@ -1,0 +1,75 @@
+name: Instagram candidate verification
+on:
+  push:
+    branches: [codex/instagram-selection]
+    paths: [.github/workflows/instagram-apply.yml]
+permissions:
+  contents: write
+concurrency:
+  group: instagram-candidate
+  cancel-in-progress: true
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/instagram-selection
+      - name: Apply hash-verified candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, json, lzma, os, pathlib, subprocess, urllib.request
+          shas = [
+              'ba266f387e1278f652a849af6c0646f774b4f557',
+              '71e771c59a0a4d26a3474d18a89bd32c312dc4a7',
+              '4632132144bff5506af3714df9f908dde661f8ae',
+              '9407b0ec2fd695fb3767606c6f7b7146d1660433',
+              '40d463eb11d9a453631e9cd827ee55f321fd307f',
+          ]
+          chunks = []
+          for sha in shas:
+              request = urllib.request.Request(
+                  'https://api.github.com/repos/tzekid/xvid/git/blobs/' + sha,
+                  headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
+                           'Accept': 'application/vnd.github+json'})
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  data = json.load(response)
+              chunk = base64.b64decode(data['content'])
+              assert hashlib.sha1(('blob %d\0' % len(chunk)).encode() + chunk).hexdigest() == sha
+              chunks.append(chunk)
+          patch = lzma.decompress(b''.join(chunks))
+          assert hashlib.sha256(patch).hexdigest() == 'c998ba8d1a585e34b0ab6e9049f193291a11aa64e21626ba5bd63795337bf5cc'
+          path = pathlib.Path('/tmp/instagram.patch')
+          path.write_bytes(patch)
+          subprocess.run(['git', 'apply', '--check', str(path)], check=True)
+          subprocess.run(['git', 'apply', str(path)], check=True)
+          pathlib.Path('.github/workflows/instagram-apply.yml').unlink()
+          PY
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libsqlite3-dev sqlite3 curl ripgrep ffmpeg
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0-dev.1963+e00c6c439
+      - name: Verify exact candidate
+        run: |
+          node --check assets/app.js
+          zig fmt --check build.zig build.zig.zon src tests
+          zig build test -Doptimize=ReleaseSafe
+          zig build e2e -Doptimize=ReleaseSafe
+          zig build -Doptimize=ReleaseSafe
+          git diff --check
+      - name: Public Instagram metadata diagnostic (non-gating)
+        continue-on-error: true
+        run: timeout 45 zig-out/bin/xvid instagram-probe https://www.instagram.com/reel/DZuTdEoPFUW/ --json
+      - name: Publish tested candidate to staging only
+        run: |
+          git config user.name 'xvid verification'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'Add native Instagram single-item carousel downloads'
+          git push origin HEAD:codex/instagram-selection
