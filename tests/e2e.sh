@@ -232,9 +232,8 @@ class Page(HTMLParser):
             assert attrs.get('action') == '/jobs' and attrs.get('method') == 'post'
             self.forms += 1
         if tag == 'input' and attrs.get('id') == 'url':
-            assert not attrs.get('value')
             self.inputs += 1
-        if tag == 'button' and 'data-basic-submit' in attrs:
+        if tag == 'button' and 'data-download' in attrs:
             self.buttons += 1
 page = Page()
 page.feed(open(sys.argv[1]).read())
@@ -256,8 +255,8 @@ http -fsS -D "$xvid_temp/home.headers" "$xvid_origin/" > "$xvid_temp/home.html"
 rg -qi '^referrer-policy: same-origin' "$xvid_temp/home.headers"
 assert_composer "$xvid_temp/home.html"
 rg -q '<main id="app"' "$xvid_temp/home.html"
-rg -q 'data-basic-submit' "$xvid_temp/home.html"
-rg -q 'name="advanced" value="1" data-advanced-submit' "$xvid_temp/home.html"
+rg -q 'data-download' "$xvid_temp/home.html"
+rg -q 'name="advanced" value="1" data-resolution' "$xvid_temp/home.html"
 asset_url=$(python3 - "$xvid_temp/home.html" <<'PYASSET'
 from html.parser import HTMLParser
 import sys
@@ -308,6 +307,7 @@ rg -q '"path": "preview/item-001.png"' "$basic_manifest"
 
 http -fsS "$xvid_origin$basic_location" > "$xvid_temp/basic.html"
 assert_composer "$xvid_temp/basic.html"
+rg -q 'value="https://x.com/fixture/status/2103"' "$xvid_temp/basic.html"
 rg -q 'data-auto-download' "$xvid_temp/basic.html"
 rg -Fq "poster=\"$basic_path/artifact/file-1?poster=1\"" "$xvid_temp/basic.html"
 if rg -q 'data-events=' "$xvid_temp/basic.html"; then
@@ -361,10 +361,10 @@ assert_composer "$xvid_temp/advanced.html"
 http -sN --max-time 2 "$xvid_origin$advanced_path/events" > "$xvid_temp/choice-events.txt" || [[ "$?" == 28 ]]
 rg -q '^event: job' "$xvid_temp/choice-events.txt"
 rg -q 'data-state="awaiting_choice"' "$xvid_temp/choice-events.txt"
-rg -q 'name="delivery" value="optimise"' "$xvid_temp/advanced.html"
-rg -q 'name="delivery" value="downscale"' "$xvid_temp/advanced.html"
+assert_absent -q 'name="delivery" value="optimise"' "$xvid_temp/advanced.html"
+assert_absent -q 'name="delivery" value="downscale"' "$xvid_temp/advanced.html"
 rg -q 'value="video-720"' "$xvid_temp/advanced.html"
-rg -q 'value="480" data-target-height="480"' "$xvid_temp/advanced.html"
+rg -q 'type="submit" name="variant" value="video-720"' "$xvid_temp/advanced.html"
 post_job_action "$advanced_path" start 'kind=video&variant=video-720&delivery=original'
 wait_for_state "$advanced_manifest" ready
 rg -q '"variant_id": "video-720"' "$advanced_manifest"
@@ -504,7 +504,7 @@ delete_job "$recovery_path"
 wait_for_absence "$xvid_temp/data/jobs/$recovery_id"
 
 stage 'abandoned Advanced choice expiry across restart'
-expiry_location=$(create_job 'https://x.com/fixture/status/2101' 1 "$xvid_temp/expiry.headers")
+expiry_location=$(create_job 'https://x.com/fixture/status/2103' 1 "$xvid_temp/expiry.headers")
 expiry_path=$(job_path_from_location "$expiry_location")
 expiry_id=$(job_id_from_location "$expiry_location")
 expiry_manifest="$xvid_temp/data/jobs/$expiry_id/job.json"
@@ -527,6 +527,32 @@ rg -q '^id: [0-9]+' "$xvid_temp/events.txt"
 rg -q '^event: done' "$xvid_temp/events.txt"
 delete_job "$sse_path"
 wait_for_absence "$xvid_temp/data/jobs/$sse_id"
+
+stage 'resolution preference skips non-choices without losing media'
+for fixture in 2101 2102 2104 2105 2129; do
+  location=$(create_job "https://x.com/fixture/status/$fixture" 1 "$xvid_temp/skip.headers")
+  path=$(job_path_from_location "$location")
+  id=$(job_id_from_location "$location")
+  manifest="$xvid_temp/data/jobs/$id/job.json"
+  wait_for_state "$manifest" ready
+  rg -q '"mode": "original"' "$manifest"
+  http -fsS "$xvid_origin$path" > "$xvid_temp/skip.html"
+  assert_absent -q 'data-choice-form' "$xvid_temp/skip.html"
+  python3 - "$manifest" "$fixture" <<'PYSKIP'
+import json, sys
+job = json.load(open(sys.argv[1]))
+expected = {'2101': 1, '2102': 4, '2104': 2, '2105': 3, '2129': 1}[sys.argv[2]]
+assert len(job['source_artifacts']) == expected
+assert job['selection'] is not None
+PYSKIP
+  delete_job "$path"
+  wait_for_absence "$xvid_temp/data/jobs/$id"
+done
+
+if [[ -n "${XVID_BROWSER_MODULE:-}" ]]; then
+  stage 'browser repeat-link journeys'
+  node "$project_root/tests/browser.mjs" "$xvid_origin" "$xvid_temp/data"
+fi
 
 stage 'final privacy, disk, and ledger checks'
 assert_absent -F 'https://x.com/fixture/status/' "$xvid_temp/server.log"
@@ -575,6 +601,23 @@ PYCONFIG
 xvid_config="$xvid_temp/real-config.json"
 start_fixture --video-file "$input_video"
 start_server
+stage 'real original stays byte-identical even when playback needs another codec'
+original_location=$(create_job 'https://x.com/fixture/status/2141' 1 "$xvid_temp/real-original.headers")
+original_path=$(job_path_from_location "$original_location")
+original_id=$(job_id_from_location "$original_location")
+original_manifest="$xvid_temp/real-data/jobs/$original_id/job.json"
+wait_for_state "$original_manifest" awaiting_choice
+http -fsS "$xvid_origin$original_path" > "$xvid_temp/real-choices.html"
+rg -q 'name="variant" value="video-120"' "$xvid_temp/real-choices.html"
+post_job_action "$original_path" start 'kind=video&variant=best&delivery=original'
+wait_for_state "$original_manifest" ready
+http -fsS "$xvid_origin$original_path/artifact/file-1?download=1" > "$xvid_temp/original.mp4"
+cmp "$input_video" "$xvid_temp/original.mp4"
+rg -q '"mode": "original"' "$original_manifest"
+[[ -z "$(find "$xvid_temp/real-data/jobs/$original_id/output" -type f -print -quit)" ]]
+delete_job "$original_path"
+wait_for_absence "$xvid_temp/real-data/jobs/$original_id"
+
 real_location=$(create_job 'https://x.com/fixture/status/2141' 1 "$xvid_temp/real.headers")
 real_path=$(job_path_from_location "$real_location")
 real_id=$(job_id_from_location "$real_location")

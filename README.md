@@ -5,15 +5,17 @@ X/Twitter status links and public Instagram posts/Reels.
 
 Production is one Zig executable behind Caddy. It resolves X and Instagram metadata natively,
 downloads from reviewed X and Instagram media hosts, validates videos with FFprobe, and
-uses FFmpeg only when the user asks for a compatible or smaller MP4. Jobs are
+delivers the selected original rendition without additional encoding. The existing
+explicit conversion API remains available for older clients. Jobs are
 temporary filesystem directories; normalized usage records live in SQLite.
 
 ## User journeys
 
 - **Basic:** paste a link, automatically download the best source media, then
   save or share it. There is no format-choice screen.
-- **Advanced:** inspect the post, choose an available source quality, then keep
-  the source or prepare a compatible/smaller MP4.
+- **Choose resolution:** enable the switch, then Paste or Download the current
+  link. Tap a source resolution to download that rendition without re-encoding.
+  Posts with no resolution choice continue automatically.
 
 Instagram carousels first show an ordered picker. Tap **Save this photo/video**
 to acquire only that child; unselected full-size files are not downloaded.
@@ -63,6 +65,19 @@ the HTTP-delivered file is probed for dimensions/pixel format/duration and decod
 in full. Synthetic fixtures remain for deliberate encoder failure and a stalled
 encoder with a TERM-ignoring descendant. All upstream traffic is loopback fixture
 traffic; these checks do not depend on live X availability.
+
+For browser coverage, reuse an installed Playwright library and Chromium:
+
+```bash
+XVID_BROWSER_MODULE=/absolute/path/to/playwright-core/index.mjs \
+XVID_BROWSER_SCREENSHOTS=/tmp/xvid-browser \
+zig build e2e -Doptimize=ReleaseSafe
+```
+
+This also exercises the disposable server with JavaScript and native forms,
+resolution selection, repeat downloads, clipboard replacements/failures, edited
+links, reload/history, and phone/desktop layouts. Clipboard permission responses
+are simulated; actual iPhone paste prompts and sharing require a device check.
 
 ## Production
 

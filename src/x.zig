@@ -1499,10 +1499,8 @@ fn probeVariants(allocator: std.mem.Allocator, items: []const ResolvedItem, vide
             .label = if (best_height) |height| try std.fmt.allocPrint(allocator, "Best · {d}p", .{height}) else "Best",
             .height = best_height,
         });
-        for ([_]u32{ 1080, 720, 480 }) |ceiling| {
-            const selected = for (item.direct_variants) |candidate| {
-                if (candidate.height != null and candidate.height.? <= ceiling) break candidate.height.?;
-            } else continue;
+        for (item.direct_variants) |candidate| {
+            const selected = candidate.height orelse continue;
             var duplicate = false;
             for (variants.items) |variant| if (variant.height == selected) {
                 duplicate = true;

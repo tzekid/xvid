@@ -242,8 +242,11 @@ with tempfile.TemporaryDirectory(prefix='xvid-instagram-') as directory:
             return value if value and value['state'] == wanted else None
         return wait_until(check, wanted)
 
-    def create(code, route='p', extra=''):
-        status, headers, _ = request('/jobs', {'url': f'https://www.instagram.com/{route}/{code}/{extra}'})
+    def create(code, route='p', extra='', resolution=False):
+        body = {'url': f'https://www.instagram.com/{route}/{code}/{extra}'}
+        if resolution:
+            body['advanced'] = '1'
+        status, headers, _ = request('/jobs', body)
         assert status == 303, (status, headers)
         return urllib.parse.urlsplit(headers['location']).path
 
@@ -262,7 +265,7 @@ with tempfile.TemporaryDirectory(prefix='xvid-instagram-') as directory:
         assert originals_since(marker) == [], 'carousel originals fetched before selection'
         status, _, html = request(location)
         assert status == 200
-        assert b'Tap one photo or video' in html and b'7 of 12' in html
+        assert b'Choose a photo or video' in html and b'7 of 12' in html
         assert b'item_id' in html and b'lazy' in html
         assert b'169.254' not in html and ORIGIN.encode() not in html
         status, _, preview = request(location + '/thumbnail/1007')
@@ -345,6 +348,23 @@ with tempfile.TemporaryDirectory(prefix='xvid-instagram-') as directory:
         time.sleep(2.3)
         assert manifest(location)['source_artifacts'] == []
         print('PASS: cancelled transfer publishes no artifact')
+
+        for code in ('SinglePhoto', 'SingleVideo'):
+            location = create(code, resolution=True)
+            value = state(location, 'ready')
+            assert len(value['source_artifacts']) == 1 and value['delivery']['mode'] == 'original'
+        marker = len(REQUESTS)
+        location = create('Carousel', resolution=True)
+        state(location, 'awaiting_choice')
+        assert originals_since(marker) == []
+        request(location + '/start', {'item_id': '1007'})
+        value = state(location, 'ready')
+        assert originals_since(marker) == ['/original/7.mp4']
+        assert len(value['source_artifacts']) == 1
+        print('PASS: resolution preference skips single items and preserves carousel selection')
+
+        if os.environ.get('XVID_BROWSER_MODULE'):
+            subprocess.run(['node', str(ROOT / 'tests/browser.mjs'), f'http://127.0.0.1:{port}', str(root / 'data'), 'instagram'], check=True)
 
         location = create('Rate')
         state(location, 'failed')

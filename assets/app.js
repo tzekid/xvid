@@ -18,6 +18,9 @@
   let fragmentCleanup = () => {}
   let pageHidden = false
   let navigating = false
+  let navigationVersion = 0
+  let readingClipboard = false
+  let lastSubmission = null
 
   const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent) ||
     (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
@@ -130,96 +133,114 @@
     return { response, document: parseDocument(await response.text()) }
   }
 
-  const setOptimistic = (form, submitter) => {
-    const app = form.closest('#app')
-    app?.setAttribute('aria-busy', 'true')
-    form.querySelector('[data-optimistic]')?.remove()
-    const status = document.createElement('p')
-    status.dataset.optimistic = '1'
-    status.className = 'privacy-note'
-    status.setAttribute('role', 'status')
-    status.textContent = form.matches('[data-link-form]')
-      ? submitter?.name === 'advanced' ? 'Checking link…' : 'Starting download…'
-      : 'Updating…'
-    form.append(status)
-    if (submitter) {
-      submitter.dataset.previousLabel = submitter.textContent
-      const label = submitter.querySelector('[data-basic-label]') || submitter
-      label.textContent = submitter.name === 'advanced' ? 'Checking…' : 'Working…'
-      submitter.disabled = true
-    }
-  }
-
-  const clearOptimistic = (form, submitter) => {
-    form.closest('#app')?.removeAttribute('aria-busy')
-    form.querySelector('[data-optimistic]')?.remove()
-    if (submitter) {
-      submitter.disabled = false
-      if (submitter.dataset.previousLabel) (submitter.querySelector('[data-basic-label]') || submitter).textContent = submitter.dataset.previousLabel
-      delete submitter.dataset.previousLabel
-    }
+  const saveDraft = (value, path = location.pathname) => {
+    try { sessionStorage.setItem(`xvid-draft:${path}`, value) } catch {}
   }
 
   const navigateForm = async (form, submitter) => {
-    if (navigating) return
-    navigating = true
+    if (navigating || readingClipboard) return
     const body = new URLSearchParams()
     formDataWithSubmitter(form, submitter).forEach((value, key) => body.append(key, String(value)))
-    setOptimistic(form, submitter)
+    const key = `${form.action}?${body}`
+    const started = performance.now()
+    // The next page may arrive between the two taps of a double tap.
+    if (lastSubmission?.key === key && started - lastSubmission.at < 500) return
+    lastSubmission = { key, at: started }
+    navigating = true
+    const version = ++navigationVersion
+    // Stop old job events before starting another action, including in-flight polls.
+    pageCleanup()
+    const app = form.closest('#app')
+    app.setAttribute('aria-busy', 'true')
+    const controls = [...form.querySelectorAll('button')].filter((button) => !button.disabled)
+    controls.forEach((button) => { button.disabled = true })
+    form.querySelector('[data-navigation-status]')?.remove()
+    const status = document.createElement('p')
+    status.dataset.navigationStatus = '1'
+    status.className = 'privacy-note'
+    status.setAttribute('role', 'status')
+    status.textContent = form.matches('[data-link-form]') ? 'Checking link…' : 'Updating…'
+    form.append(status)
     try {
       const { response, document: next } = await fetchPage(form.action, {
         method: (form.method || 'GET').toUpperCase(),
         body,
         headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }
       })
-      const currentUrl = new URL(location.href)
+      if (version !== navigationVersion) return
       const targetUrl = new URL(response.url)
-      const draft = form.matches('[data-link-form]') && response.ok ? '' : document.querySelector('#url')?.value || ''
+      const draft = document.querySelector('#url')?.value || ''
+      saveDraft(draft, targetUrl.pathname)
+      const nextInput = next.querySelector('#url')
+      if (nextInput) nextInput.value = draft
       if (form.matches('[data-link-form]')) document.activeElement?.blur()
-      replaceApp(next, response.url, currentUrl.pathname === targetUrl.pathname ? 'replace' : 'push')
-      const input = document.querySelector('#url')
-      if (input && draft) {
-        input.value = draft
-        input.dispatchEvent(new Event('input'))
-      }
+      replaceApp(next, response.url, location.pathname === targetUrl.pathname ? 'replace' : 'push')
       if (form.matches('[data-link-form]')) window.scrollTo(0, 0)
     } catch {
-      clearOptimistic(form, submitter)
-      form.dataset.nativeSubmit = '1'
-      if (submitter) form.requestSubmit(submitter)
-      else form.submit()
+      if (version !== navigationVersion) return
+      lastSubmission = null
+      // A lost response may already have created a job. Never replay a POST automatically.
+      status.className = 'field-error'
+      status.textContent = 'Could not confirm the request. Check your connection before trying again.'
+      const streamCleanup = connectJob(app)
+      pageCleanup = () => {
+        fragmentCleanup()
+        streamCleanup()
+        clearPrepared()
+      }
     } finally {
-      navigating = false
+      if (version === navigationVersion) {
+        navigating = false
+        app.removeAttribute('aria-busy')
+        controls.forEach((button) => { button.disabled = false })
+      }
     }
   }
 
   const navigateLink = async (link) => {
-    if (navigating) return
-    navigating = true
+    if (navigating || readingClipboard) return
     try {
-      const { response, document: next } = await fetchPage(link.href)
-      replaceApp(next, response.url, 'push')
+      await loadCurrent(link.href)
     } catch {
       location.assign(link.href)
-    } finally {
-      navigating = false
     }
+  }
+
+  const refreshDownload = (root) => {
+    const input = root.querySelector('#url')
+    const button = root.querySelector('[data-download]')
+    if (!input || !button) return
+    button.hidden = !supportedPostUrl(input.value)
+    button.textContent = root.dataset.pageState === 'ready' && input.value === input.defaultValue
+      ? 'Download again' : 'Download'
   }
 
   const updateComposer = (root) => {
     const form = root.querySelector('[data-link-form]')
     const input = form?.querySelector('#url')
-    const basic = form?.querySelector('[data-basic-submit]')
-    const label = form?.querySelector('[data-basic-label]')
+    const paste = form?.querySelector('[data-paste]')
+    const download = form?.querySelector('[data-download]')
     const clear = form?.querySelector('[data-clear-input]')
     const error = form?.querySelector('[data-link-error]')
-    if (!form || !input || !basic || !label) return
+    if (!form || !input || !paste) return
+
+    const resolution = form.querySelector('[data-resolution]')
+    try {
+      const saved = sessionStorage.getItem('xvid-resolution')
+      if (saved !== null) resolution.checked = saved === '1'
+      const draft = sessionStorage.getItem(`xvid-draft:${location.pathname}`)
+      if (draft !== null) input.value = draft
+    } catch {}
+    resolution.addEventListener('change', () => {
+      try { sessionStorage.setItem('xvid-resolution', resolution.checked ? '1' : '0') } catch {}
+    })
 
     const refresh = () => {
-      label.textContent = input.value.trim() ? 'Save media' : navigator.clipboard?.readText ? 'Paste & save' : 'Save media'
+      refreshDownload(root)
       if (clear) clear.hidden = !input.value
       input.setCustomValidity('')
       if (error) error.hidden = true
+      saveDraft(input.value)
     }
     input.addEventListener('input', refresh)
     input.addEventListener('paste', (event) => {
@@ -234,62 +255,41 @@
       refresh()
       input.focus()
     })
-    basic.addEventListener('click', async (event) => {
-      if (input.value.trim() || !navigator.clipboard?.readText) return
-      event.preventDefault()
-      basic.disabled = true
+    paste.hidden = false
+    paste.addEventListener('click', async () => {
+      if (navigating || readingClipboard) return
+      readingClipboard = true
+      paste.disabled = true
+      download.disabled = true
+      const version = navigationVersion
       try {
-        const candidate = supportedPostUrl(await navigator.clipboard.readText())
-        if (!candidate) throw new Error()
+        if (!navigator.clipboard?.readText) throw new Error('Clipboard access is unavailable. Paste a link into the field.')
+        let text
+        try { text = await navigator.clipboard.readText() } catch {
+          throw new Error('Clipboard access was blocked. Allow access or paste a link into the field.')
+        }
+        if (!root.isConnected || version !== navigationVersion) return
+        const candidate = supportedPostUrl(text)
+        if (!candidate) throw new Error('The clipboard does not contain a public X or Instagram post link.')
         input.value = candidate
         refresh()
-        basic.disabled = false
-        form.requestSubmit(basic)
-      } catch {
-        if (error) {
-          error.textContent = 'Clipboard access was blocked or did not contain a public X or Instagram post link.'
-          error.hidden = false
-        }
+        readingClipboard = false
+        download.disabled = false
+        form.requestSubmit(download)
+      } catch (failure) {
+        if (!root.isConnected || version !== navigationVersion) return
+        error.textContent = failure.message
+        error.hidden = false
         input.focus()
       } finally {
-        basic.disabled = false
+        readingClipboard = false
+        if (!navigating) {
+          paste.disabled = false
+          download.disabled = false
+        }
       }
     })
     refresh()
-  }
-
-  const updateChoiceSummary = (form) => {
-    const variant = form.querySelector('input[name="variant"]:checked')
-    const delivery = form.querySelector('input[name="delivery"]:checked')
-    const targets = [...form.querySelectorAll('[data-target-height]')]
-    const targetWrap = form.querySelector('[data-target-heights]')
-    const variantHeight = Number(variant?.dataset.variantHeight || 0)
-    targets.forEach((target) => { target.disabled = variantHeight > 0 && Number(target.dataset.targetHeight) >= variantHeight })
-    if (delivery?.value === 'downscale') {
-      targetWrap?.removeAttribute('hidden')
-      let selected = targets.find((target) => target.checked && !target.disabled)
-      if (!selected) {
-        selected = targets.find((target) => !target.disabled)
-        if (selected) selected.checked = true
-      }
-    } else {
-      targetWrap?.setAttribute('hidden', '')
-    }
-    const summary = form.querySelector('[data-selection-summary]')
-    if (!summary) return
-    const quality = variant?.closest('.radio-row')?.querySelector('strong')?.textContent?.trim()
-    const size = variant?.closest('.radio-row')?.querySelector('.row-value')?.textContent?.trim()
-    const prep = delivery?.closest('.radio-row')?.querySelector('strong')?.textContent?.trim()
-    const target = delivery?.value === 'downscale' ? targets.find((item) => item.checked)?.value : null
-    summary.textContent = [quality, target ? `${target}p` : prep, size && size !== '—' ? size : null].filter(Boolean).join(' · ')
-  }
-
-  const wireChoice = (root) => {
-    const form = root.querySelector('[data-choice-form]')
-    if (!form) return
-    const update = () => updateChoiceSummary(form)
-    form.addEventListener('change', update)
-    update()
   }
 
   const shareKey = (button) => button.dataset.shareUrl
@@ -490,7 +490,6 @@
   }
 
   const enhanceState = (root) => {
-    wireChoice(root)
     revealShares(root)
     triggerAutomaticDownload(root)
     const expiryCleanup = updateExpiry(root)
@@ -505,7 +504,7 @@
     template.innerHTML = html.trim()
     const next = template.content.querySelector('[data-state-fragment]')
     const holder = app.querySelector('#job-state')
-    if (!next || !holder) return false
+    if (!next || !holder || !app.isConnected) return false
     const revision = Number(next.dataset.revision || 0)
     const current = Number(app.dataset.revision || 0)
     if (revision <= current) return false
@@ -515,6 +514,7 @@
     app.dataset.revision = String(revision)
     const state = next.dataset.state
     app.dataset.pageState = state === 'ready' ? 'ready' : state === 'awaiting_choice' ? 'choose' : state === 'failed' || state === 'cancelled' ? 'problem' : state === 'probing' ? 'checking' : 'working'
+    refreshDownload(app)
     fragmentCleanup = enhanceState(holder)
     restoreFocus(holder, focusKey)
     return true
@@ -574,24 +574,28 @@
       source?.close()
       source = new EventSource(endpoint)
       source.addEventListener('open', () => {
+        if (closed) return
         errors = 0
         setConnection('')
         stopPoll()
         document.querySelector('meta[http-equiv="refresh"]')?.remove()
       })
-      source.addEventListener('job', (event) => replaceJobState(app, event.data))
+      source.addEventListener('job', (event) => { if (!closed) replaceJobState(app, event.data) })
       source.addEventListener('done', () => {
+        if (closed) return
         source?.close()
         stopPoll()
         setConnection('')
         triggerAutomaticDownload(app)
       })
       source.addEventListener('deleted', () => {
+        if (closed) return
         source?.close()
         stopPoll()
         void loadCurrent('/', 'replace')
       })
       source.addEventListener('error', () => {
+        if (closed) return
         errors += 1
         setConnection('Reconnecting…')
         if (errors >= 3) {
@@ -610,12 +614,22 @@
   }
 
   const loadCurrent = async (url, historyMode = 'push') => {
-    const { response, document: next } = await fetchPage(url)
-    replaceApp(next, response.url, historyMode)
+    const version = ++navigationVersion
+    navigating = true
+    pageCleanup()
+    try {
+      const { response, document: next } = await fetchPage(url)
+      if (version === navigationVersion) replaceApp(next, response.url, historyMode)
+    } catch (error) {
+      if (version === navigationVersion) throw error
+    } finally {
+      if (version === navigationVersion) navigating = false
+    }
   }
 
   const boot = (root = document.querySelector('#app')) => {
     if (!root) return
+    document.querySelector('meta[http-equiv="refresh"]')?.remove()
     pageCleanup()
     fragmentCleanup = () => {}
     updateComposer(root)
@@ -636,10 +650,8 @@
   document.addEventListener('submit', (event) => {
     const form = event.target.closest('form[data-nav-form]')
     if (!form) return
-    if (form.dataset.nativeSubmit === '1') {
-      delete form.dataset.nativeSubmit
-      return
-    }
+    event.preventDefault()
+    if (navigating || readingClipboard) return
     const input = form.querySelector('#url')
     if (input) {
       const candidate = supportedPostUrl(input.value)
@@ -726,6 +738,8 @@
   })
   addEventListener('pagehide', () => {
     pageHidden = true
+    navigationVersion += 1
+    navigating = false
     pageCleanup()
     clearPrepared()
   })

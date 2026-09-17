@@ -19,7 +19,7 @@ const icon_192 = @embedFile("icon_192");
 const icon_512 = @embedFile("icon_512");
 const max_form_bytes: u64 = 16 * 1024;
 const maximum_share_bytes = 64 * 1024 * 1024;
-const asset_version = "5";
+const asset_version = render.asset_version;
 
 pub const ClientContext = struct {
     peer_key: u64,
@@ -86,22 +86,22 @@ fn createJob(app: *App, arena: std.mem.Allocator, request: *std.http.Server.Requ
     };
     const source_url = form.url orelse return problem(request, .bad_request, "Missing link", "Paste one public X status link or Instagram post/Reel.");
     const advanced = if (form.advanced) |value|
-        if (std.mem.eql(u8, value, "1")) true else return problem(request, .unprocessable_entity, "Invalid choice mode", "Use the normal save action or Choose quality or format.")
+        if (std.mem.eql(u8, value, "1")) true else return problem(request, .unprocessable_entity, "Invalid choice mode", "Use Download or the Choose resolution switch.")
     else
         false;
     var host_buffer: [512]u8 = undefined;
-    const validated = media_url.validate(source_url, &host_buffer) catch return problem(request, .unprocessable_entity, "That link is not allowed", "Use a public X or Instagram link without credentials or a private network address.");
-    if (!source.matches(source_url)) return problem(request, .unprocessable_entity, "This link is not supported", "Use a public X status link or Instagram post/Reel. Stories and profiles are not supported.");
-    if (!(app.hasMinimumFreeSpace() catch false)) return problem(request, .service_unavailable, "Storage is unavailable", "xvid is preserving its configured free-space floor. Try again after existing jobs expire.");
+    const validated = media_url.validate(source_url, &host_buffer) catch return problemWithLink(request, source_url, advanced, .unprocessable_entity, "That link is not allowed", "Use a public X or Instagram link without credentials or a private network address.");
+    if (!source.matches(source_url)) return problemWithLink(request, source_url, advanced, .unprocessable_entity, "This link is not supported", "Use a public X status link or Instagram post/Reel. Stories and profiles are not supported.");
+    if (!(app.hasMinimumFreeSpace() catch false)) return problemWithLink(request, source_url, advanced, .service_unavailable, "Storage is unavailable", "xvid is preserving its configured free-space floor. Try again after existing jobs expire.");
     switch (app.rate_limiter.allow(rate_key, now(app.io))) {
         .allowed => {},
-        .probes_limited => return problem(request, .too_many_requests, "Too many link checks", "Wait about a minute before checking another X post."),
-        .jobs_limited => return problem(request, .too_many_requests, "Too many downloads", "This address has reached the bounded hourly download allowance."),
-        .table_full => return problem(request, .service_unavailable, "The service is busy", "Try again after inactive client entries expire."),
+        .probes_limited => return problemWithLink(request, source_url, advanced, .too_many_requests, "Too many link checks", "Wait about a minute before checking another X post."),
+        .jobs_limited => return problemWithLink(request, source_url, advanced, .too_many_requests, "Too many downloads", "This address has reached the bounded hourly download allowance."),
+        .table_full => return problemWithLink(request, source_url, advanced, .service_unavailable, "The service is busy", "Try again after inactive client entries expire."),
     }
     const intent = if (advanced) job_mod.Intent.inspect else job_mod.Intent.save_original;
     const job = app.registry.create(source_url, intent, now(app.io)) catch |err| switch (err) {
-        error.RegistryFull => return problem(request, .service_unavailable, "xvid is full", "Try again after existing temporary jobs expire."),
+        error.RegistryFull => return problemWithLink(request, source_url, advanced, .service_unavailable, "xvid is full", "Try again after existing temporary jobs expire."),
         else => return err,
     };
     app.usage_store.recordCreated(job.data.id, job.data.created_at, validated.host, intent) catch |err| {
@@ -109,13 +109,13 @@ fn createJob(app: *App, arena: std.mem.Allocator, request: *std.http.Server.Requ
         @memcpy(&id, job.data.id);
         _ = app.registry.delete(&id) catch false;
         std.log.warn("usage job create failed job_id={s} error={s}", .{ &id, @errorName(err) });
-        return problem(request, .service_unavailable, "Usage records are unavailable", "xvid could not durably record this job. Try again shortly.");
+        return problemWithLink(request, source_url, advanced, .service_unavailable, "Usage records are unavailable", "xvid could not durably record this job. Try again shortly.");
     };
     if (!try app.enqueueProbe(job.data.id)) {
         _ = try app.registry.fail(job.data.id, "QUEUE_FULL", "The link-check queue was full before this job could start.", now(app.io), app.config.terminal_ttl_seconds);
         app.syncUsage(job.data.id);
         _ = try app.registry.delete(job.data.id);
-        return problem(request, .service_unavailable, "Link checks are full", "Try again after an existing check completes.");
+        return problemWithLink(request, source_url, advanced, .service_unavailable, "Link checks are full", "Try again after an existing check completes.");
     }
     std.log.info("job_created job_id={s} source_host={s} state=probing intent={s}", .{ job.data.id, validated.host, @tagName(intent) });
     return redirectCreatedJob(request, job.data.id, intent == .save_original);
@@ -670,10 +670,14 @@ fn respondJobPage(request: *std.http.Server.Request, snapshot: job_mod.Snapshot,
 }
 
 fn problem(request: *std.http.Server.Request, status: std.http.Status, title: []const u8, message: []const u8) !void {
+    return problemWithLink(request, "", false, status, title, message);
+}
+
+fn problemWithLink(request: *std.http.Server.Request, url: []const u8, resolution: bool, status: std.http.Status, title: []const u8, message: []const u8) !void {
     var buffer: [8 * 1024]u8 = undefined;
     const headers = responseHeaders("text/html; charset=utf-8", "no-store");
     var response = try request.respondStreaming(&buffer, .{ .respond_options = .{ .status = status, .extra_headers = &headers } });
-    try render.errorPage(&response.writer, title, message);
+    try render.errorPage(&response.writer, title, message, url, resolution);
     try response.end();
 }
 

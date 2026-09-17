@@ -83,10 +83,11 @@ button, input, .primary-link, .download-action, .share-action { touch-action: ma
 }
 .brand {
   display: inline-flex;
-  min-height: 3rem;
-  align-items: baseline;
+  min-height: 3.5rem;
+  padding-inline: 0.25rem;
+  align-items: center;
   color: var(--ink);
-  font-size: 2.25rem;
+  font-size: 2.625rem;
   font-weight: 800;
   letter-spacing: -0.08em;
   line-height: 1.2;
@@ -97,22 +98,14 @@ button, input, .primary-link, .download-action, .share-action { touch-action: ma
   width: 0.22em;
   height: 0.22em;
   margin-left: 0.14em;
+  align-self: center;
+  transform: translateY(0.25em);
   border-radius: 50%;
   background: var(--accent);
 }
 .connection-state { color: var(--muted); font-size: 0.8125rem; font-weight: 600; }
 
-/* One statement and one working surface, not a landing-page card grid. */
-.compose-shell {
-  display: grid;
-  grid-template-areas: "header" "intro" "composer" "note";
-  grid-template-rows: auto auto auto 1fr;
-  align-content: start;
-  gap: 0;
-}
-.compose-shell .app-header { grid-area: header; margin-bottom: 2.75rem; }
-.compose-view { grid-area: intro; min-width: 0; margin-bottom: 2rem; }
-.compose-copy h1,
+.compose-shell { max-width: 38rem; }
 .source-summary h1,
 .problem-view h1,
 .problem-view h2,
@@ -124,22 +117,7 @@ button, input, .primary-link, .download-action, .share-action { touch-action: ma
   line-height: 1.1;
   overflow-wrap: anywhere;
 }
-.compose-copy h1 {
-  max-width: 10ch;
-  text-wrap: balance;
-  font-size: clamp(2.75rem, 12vw, 4rem);
-  line-height: 1.02;
-  letter-spacing: -0.055em;
-}
-.compose-copy p {
-  max-width: 34ch;
-  margin: 1.25rem 0 0;
-  color: var(--muted);
-  font-size: 1rem;
-  line-height: 1.65;
-}
 .persistent-composer {
-  container-type: inline-size;
   min-width: 0;
   margin-bottom: 2rem;
   border-bottom: 1px solid var(--line);
@@ -147,8 +125,6 @@ button, input, .primary-link, .download-action, .share-action { touch-action: ma
   background: var(--canvas);
 }
 .compose-shell .persistent-composer {
-  grid-area: composer;
-  align-self: center;
   margin: 0;
   border: 1px solid var(--line);
   border-radius: var(--radius-surface);
@@ -218,26 +194,8 @@ button, .primary-link, .download-action, .share-action {
   text-decoration: underline;
   text-underline-offset: 0.25em;
 }
-.advanced-entry { justify-self: start; color: var(--muted); font-size: 0.875rem; font-weight: 550; }
-.compose-shell .advanced-entry { justify-self: center; text-align: center; }
 .privacy-note { margin: 1rem 0 0; color: var(--muted); font-size: 0.8125rem; line-height: 1.7; }
-.compose-shell > .privacy-note { grid-area: note; align-self: end; margin: 1.75rem 0 0; }
-.link-form [data-optimistic] { margin: 0; }
-
-/* Compact repeat-entry composer on job and problem pages. */
-.job-shell .link-form, .problem-shell .link-form { grid-template-columns: minmax(0, 1fr) auto; gap: 0.625rem; }
-.job-shell .link-form > label, .problem-shell .link-form > label,
-.job-shell .field-error, .problem-shell .field-error,
-.job-shell .advanced-entry, .problem-shell .advanced-entry,
-.job-shell [data-optimistic], .problem-shell [data-optimistic] { grid-column: 1 / -1; }
-.job-shell .url-control, .problem-shell .url-control { grid-column: 1; grid-row: 2; }
-.job-shell .link-form .primary-action, .problem-shell .link-form .primary-action { grid-column: 2; grid-row: 2; padding-inline: 1rem; }
-
-/* Also stack when larger text leaves too little room for two controls. */
-@container (max-width: 20em) {
-  .job-shell .link-form, .problem-shell .link-form { grid-template-columns: minmax(0, 1fr); }
-  .job-shell .link-form .primary-action, .problem-shell .link-form .primary-action { grid-column: 1; grid-row: auto; }
-}
+.link-form [data-navigation-status] { margin: 0; }
 
 #job-state, .state-view { min-width: 0; width: 100%; }
 .source-summary { margin-bottom: 1.75rem; }
@@ -279,43 +237,38 @@ progress::-moz-progress-bar { border-radius: 1rem; background: var(--accent); }
 .choice-heading { margin-bottom: 1.75rem; }
 .choice-heading h2, .ready-heading h2, .problem-view h2 { font-size: 1.75rem; }
 .choice-heading p { font-size: 0.9375rem; }
-.choice-group, .choice-form fieldset { display: grid; gap: 0; min-width: 0; margin: 0 0 1.75rem; border: 0; padding: 0; }
-.choice-group legend, .choice-form fieldset legend { margin-bottom: 0.75rem; }
-.radio-row {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  min-height: 4.75rem;
+.resolution-options { display: grid; gap: 0.625rem; }
+.resolution-row {
+  display: flex;
+  width: 100%;
+  min-height: 3.5rem;
   align-items: center;
-  gap: 0.875rem;
-  border-top: 1px solid var(--line);
-  padding: 1rem 0.75rem;
+  justify-content: space-between;
+  gap: 1rem;
+  border: 1px solid var(--control-line);
+  padding: 0.875rem 1rem;
+  background: var(--surface);
+  text-align: left;
+}
+.row-value { color: var(--muted); font-size: 0.8125rem; font-variant-numeric: tabular-nums; }
+.resolution-toggle { display: flex; align-items: center; justify-content: space-between; min-height: 3rem; gap: 1rem; cursor: pointer; }
+.resolution-toggle input {
+  appearance: none;
+  flex: none;
+  width: 2.75rem;
+  height: 1.625rem;
+  margin: 0;
+  border: 1px solid var(--control-line);
+  border-radius: 2rem;
+  background: var(--surface);
   cursor: pointer;
 }
-.radio-row:last-child { border-bottom: 1px solid var(--line); }
-.radio-row:has(input:checked), .radio-row.selected-static { background: var(--soft); box-shadow: inset 3px 0 var(--accent); }
-.radio-row.selected-static { grid-template-columns: minmax(0, 1fr); cursor: default; }
-.radio-row input { width: 1.25rem; height: 1.25rem; margin: 0; accent-color: var(--accent); }
-.radio-row span { min-width: 0; }
-.radio-row strong, .radio-row small { display: block; overflow-wrap: anywhere; }
-.radio-row strong { font-size: 0.9375rem; font-weight: 650; }
-.radio-row small { margin-top: 0.25rem; color: var(--muted); font-size: 0.8125rem; line-height: 1.5; font-weight: 450; }
-.row-value { color: var(--muted); font-size: 0.8125rem; font-variant-numeric: tabular-nums; text-align: right; overflow-wrap: anywhere; }
-.target-heights { margin: 0.875rem 0 0.25rem 0; }
-.target-heights > p { margin: 0 0 0.625rem; color: var(--muted); font-size: 0.8125rem; }
-.target-chip { position: relative; display: inline-flex; margin: 0 0.375rem 0.375rem 0; cursor: pointer; }
-.target-chip input { position: absolute; width: 1px; height: 1px; opacity: 0; }
-.target-chip span { display: inline-flex; min-width: 4.5rem; min-height: 3rem; align-items: center; justify-content: center; border: 1px solid var(--control-line); border-radius: 0.625rem; padding: 0.5rem 0.875rem; font-size: 0.875rem; font-weight: 600; }
-.target-chip input:checked + span { border-color: var(--accent); background: var(--accent); color: var(--accent-ink); }
-.target-chip input:focus-visible { outline: none; }
-.target-chip input:focus-visible + span { outline: 3px solid var(--focus); outline-offset: 3px; }
-.target-chip input:disabled + span { opacity: 0.45; cursor: not-allowed; }
-/* In-flow actions never cover the last choice, delete action or phone keyboard. */
-.choice-action-bar { margin-top: 1.5rem; border-top: 1px solid var(--line); padding-top: 1.25rem; }
-.choice-action-bar > p { margin: 0 0 0.75rem; color: var(--muted); font-size: 0.875rem; font-variant-numeric: tabular-nums; }
+.resolution-toggle input::before { content: ""; display: block; width: 1.125rem; height: 1.125rem; margin: 0.1875rem; border-radius: 50%; background: var(--muted); }
+.resolution-toggle input:checked { background: var(--accent); border-color: var(--accent); }
+.resolution-toggle input:checked::before { transform: translateX(1.125rem); background: var(--accent-ink); }
+.link-form .secondary-action { width: 100%; min-height: 3.5rem; padding: 0.875rem 1.25rem; }
 
 .ready-heading { margin-bottom: 1.25rem; }
-.ready-heading .section-kicker { display: inline-flex; align-items: center; gap: 0.5rem; color: var(--success); }
-.ready-heading .section-kicker::before { content: ""; width: 0.45rem; height: 0.45rem; border-radius: 50%; background: currentColor; }
 .ready-view > .primary-action, .ready-view > .primary-link { margin-bottom: 1rem; }
 .artifact-list { display: grid; gap: 0; }
 .artifact-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 0.75rem 1rem; border-top: 1px solid var(--line); padding: 1rem 0; }
@@ -350,36 +303,24 @@ progress::-moz-progress-bar { border-radius: 1rem; background: var(--accent); }
 
 @media (hover: hover) {
   .primary-action:hover, .primary-link:hover { background: var(--accent-hover); }
-  .clear-input:hover, .secondary-action:hover, .download-action:hover, .share-action:hover { background: var(--soft); }
+  .resolution-row:hover, .clear-input:hover, .secondary-action:hover, .download-action:hover, .share-action:hover { background: var(--soft); }
   .share-action[data-share-primary]:hover, .artifact-row:only-child .download-action:hover { background: var(--accent-hover); }
   .artifact-row:only-child .share-action:not([hidden]) + .download-action:hover { background: var(--soft); }
   .text-action:hover, .danger-action:hover, .job-utilities a:hover { text-decoration-thickness: 2px; }
-  .advanced-entry:hover { color: var(--ink); }
-  .radio-row:hover { background: var(--soft); }
 }
 
 @media (min-width: 40rem) and (max-width: 59.999rem) {
   .app-shell { max-width: 44rem; padding-inline: 2rem; }
-  .compose-copy h1 { max-width: 12ch; font-size: 4.5rem; }
   .compose-shell .persistent-composer { padding: 2rem; }
-  .compose-shell > .privacy-note { margin-top: 2rem; }
 }
 
 @media (min-width: 60rem) {
   .app-shell { padding: max(2rem, env(safe-area-inset-top)) max(2.5rem, env(safe-area-inset-right)) max(2rem, env(safe-area-inset-bottom)) max(2.5rem, env(safe-area-inset-left)); }
-  .compose-shell { grid-template-areas: "header header" "intro composer" "note note"; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); grid-template-rows: auto 1fr auto; column-gap: clamp(2rem, 5vw, 5rem); }
   .compose-shell .app-header { margin-bottom: 3rem; }
-  .compose-view { align-self: center; margin: 0; padding-block: 2.5rem; }
-  .compose-copy h1 { font-size: clamp(4rem, 6.8vw, 5.5rem); }
-  .compose-copy p { margin-top: 1.75rem; font-size: 1.0625rem; }
   .compose-shell .persistent-composer { padding: 2rem; }
-  .compose-shell > .privacy-note { margin-top: 3rem; }
   .job-shell, .problem-shell { display: grid; grid-template-columns: minmax(0, 0.72fr) minmax(0, 1.28fr); grid-template-rows: auto 1fr; column-gap: 3.5rem; align-content: start; }
   .job-shell .app-header, .problem-shell .app-header { grid-column: 1 / -1; margin-bottom: 3rem; }
   .job-shell > .persistent-composer, .problem-shell > .persistent-composer { position: sticky; top: 2rem; align-self: start; grid-column: 1; grid-row: 2; margin: 0; border: 1px solid var(--line); border-radius: var(--radius-surface); padding: 1.5rem; background: var(--soft); }
-  .job-shell .link-form, .problem-shell .link-form { grid-template-columns: minmax(0, 1fr); }
-  .job-shell .link-form .primary-action, .problem-shell .link-form .primary-action { grid-column: 1; grid-row: auto; }
-  .job-shell .advanced-entry, .problem-shell .advanced-entry { justify-self: center; text-align: center; }
   #job-state, .problem-shell > .problem-view { grid-column: 2; grid-row: 2; }
 }
 
@@ -388,7 +329,6 @@ progress::-moz-progress-bar { border-radius: 1rem; background: var(--accent); }
   .artifact-row { grid-template-columns: minmax(0, 1fr); }
   .artifact-actions { width: 100%; }
   .artifact-actions > * { flex: 1; }
-  .radio-row { gap: 0.625rem; padding-inline: 0.625rem; }
   .row-value { font-size: 0.75rem; }
 }
 @media (max-height: 35rem) and (min-width: 60rem) {
@@ -403,10 +343,9 @@ progress::-moz-progress-bar { border-radius: 1rem; background: var(--accent); }
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }
 @media (forced-colors: active) {
-  .primary-action, .primary-link, .download-action, .share-action, .target-chip span { border: 2px solid ButtonText; }
-  .radio-row:has(input:checked), .target-chip input:checked + span { outline: 2px solid Highlight; outline-offset: -2px; }
+  .resolution-toggle input { appearance: auto; }
+  .resolution-toggle input::before { display: none; }
   progress { border: 1px solid CanvasText; }
-  .brand::after, .ready-heading .section-kicker::before { background: CanvasText; }
 }
 
 /* Instagram's picker is a bounded list of ordinary forms, not a client store. */

@@ -2,22 +2,44 @@ const std = @import("std");
 const job_mod = @import("job.zig");
 
 const maximum_share_bytes = 64 * 1024 * 1024;
-const asset_version = "5";
+pub const asset_version = "6";
 
-const link_composer =
+const composer_before_url =
     \\<div class="persistent-composer">
     \\      <form class="link-form" action="/jobs" method="post" data-link-form data-nav-form>
     \\        <label for="url">Public X or Instagram post link</label>
     \\        <div class="url-control">
-    \\          <input id="url" name="url" type="url" inputmode="url" autocomplete="url" autocapitalize="none" autocorrect="off" spellcheck="false" required maxlength="4096" placeholder="https://x.com/…/status/…" aria-describedby="link-error">
+    \\          <input id="url" name="url" type="url" inputmode="url" autocomplete="url" autocapitalize="none" autocorrect="off" spellcheck="false" required maxlength="4096" placeholder="https://x.com/…/status/…" aria-describedby="link-error" value="
+;
+const composer_after_url =
+    \\" >
     \\          <button class="clear-input" type="button" data-clear-input hidden aria-label="Clear link">×</button>
     \\        </div>
     \\        <p id="link-error" class="field-error" data-link-error hidden></p>
-    \\        <button class="primary-action" type="submit" data-basic-submit><span data-basic-label>Save media</span></button>
-    \\        <button class="text-action advanced-entry" type="submit" name="advanced" value="1" data-advanced-submit>Choose quality or format</button>
+    \\        <label class="resolution-toggle"><span>Choose resolution</span><input type="checkbox" role="switch" name="advanced" value="1" data-resolution
+;
+const composer_after_resolution =
+    \\></label>
+    \\        <button class="primary-action" type="button" data-paste hidden>Paste</button>
+    \\        <button class="secondary-action" type="submit" data-download>
+;
+const composer_end =
+    \\</button>
     \\      </form>
     \\</div>
 ;
+
+const link_composer = composer_before_url ++ composer_after_url ++ composer_after_resolution ++ "Download" ++ composer_end;
+
+fn linkComposer(writer: *std.Io.Writer, url: []const u8, resolution: bool, ready: bool) !void {
+    try writer.writeAll(composer_before_url);
+    try escapeAttribute(writer, url);
+    try writer.writeAll(composer_after_url);
+    if (resolution) try writer.writeAll(" checked");
+    try writer.writeAll(composer_after_resolution);
+    try writer.writeAll(if (ready) "Download again" else "Download");
+    try writer.writeAll(composer_end);
+}
 
 pub const home =
     \\<!doctype html>
@@ -32,20 +54,13 @@ pub const home =
     \\  <link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
     \\  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
     \\  <link rel="manifest" href="/manifest.webmanifest">
-    \\  <link rel="stylesheet" href="/assets/app.css?v=5">
-    \\  <script src="/assets/app.js?v=5" defer></script>
+    \\  <link rel="stylesheet" href="/assets/app.css?v=6">
+    \\  <script src="/assets/app.js?v=6" defer></script>
     \\</head>
     \\<body>
     \\  <main id="app" class="app-shell compose-shell" data-page-state="compose">
     \\    <header class="app-header"><a class="brand" href="/" aria-label="xvid home">xvid</a></header>
 ++ link_composer ++
-    \\    <section class="compose-view" aria-labelledby="compose-title">
-    \\      <div class="compose-copy">
-    \\        <h1 id="compose-title">Save the media you want</h1>
-    \\        <p>X posts save immediately. Instagram carousels let you pick one item. Files remain temporary.</p>
-    \\      </div>
-    \\    </section>
-    \\      <p id="link-help" class="privacy-note">Public posts only · no accounts · files expire automatically</p>
     \\  </main>
     \\</body>
     \\</html>
@@ -69,7 +84,7 @@ pub fn jobPage(writer: *std.Io.Writer, snapshot: job_mod.Snapshot, automatic_nav
         try writer.writeByte('"');
     }
     try writer.writeAll("><header class=\"app-header\"><a class=\"brand\" href=\"/\" data-nav-link aria-label=\"xvid home\">xvid</a><span class=\"connection-state\" data-connection-state hidden></span></header>");
-    try writer.writeAll(link_composer);
+    try linkComposer(writer, snapshot.data.source_url, snapshot.data.intent == .inspect, snapshot.data.state == .ready);
     try writer.writeAll("<div id=\"job-state\">");
     try jobState(writer, snapshot);
     try writer.writeAll("</div></main></body></html>");
@@ -119,10 +134,12 @@ pub fn jobState(writer: *std.Io.Writer, snapshot: job_mod.Snapshot) !void {
     try writer.writeAll("</section>");
 }
 
-pub fn errorPage(writer: *std.Io.Writer, title: []const u8, message: []const u8) !void {
+pub fn errorPage(writer: *std.Io.Writer, title: []const u8, message: []const u8, url: []const u8, resolution: bool) !void {
     try writer.writeAll("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1,viewport-fit=cover\"><meta name=\"theme-color\" content=\"#ffffff\" media=\"(prefers-color-scheme: light)\"><meta name=\"theme-color\" content=\"#0b0b0b\" media=\"(prefers-color-scheme: dark)\"><title>");
     try escape(writer, title);
-    try writer.print(" · xvid</title><link rel=\"icon\" href=\"/assets/icon.svg\" type=\"image/svg+xml\"><link rel=\"stylesheet\" href=\"/assets/app.css?v={s}\"><script src=\"/assets/app.js?v={s}\" defer></script></head><body><main id=\"app\" class=\"app-shell problem-shell\" data-page-state=\"problem\"><header class=\"app-header\"><a class=\"brand\" href=\"/\" data-nav-link>xvid</a></header>{s}<section class=\"problem-view\" role=\"alert\"><p class=\"section-kicker\">Could not continue</p><h1>", .{ asset_version, asset_version, link_composer });
+    try writer.print(" · xvid</title><link rel=\"icon\" href=\"/assets/icon.svg\" type=\"image/svg+xml\"><link rel=\"stylesheet\" href=\"/assets/app.css?v={s}\"><script src=\"/assets/app.js?v={s}\" defer></script></head><body><main id=\"app\" class=\"app-shell problem-shell\" data-page-state=\"problem\"><header class=\"app-header\"><a class=\"brand\" href=\"/\" data-nav-link>xvid</a></header>", .{ asset_version, asset_version });
+    try linkComposer(writer, url, resolution, false);
+    try writer.writeAll("<section class=\"problem-view\" role=\"alert\"><h1>");
     try escape(writer, title);
     try writer.writeAll("</h1><p>");
     try escape(writer, message);
@@ -144,7 +161,7 @@ fn renderSourceSummary(writer: *std.Io.Writer, snapshot: job_mod.Snapshot) !void
         try escape(writer, probe.title);
         try writer.writeAll("</h1></header>");
     } else {
-        try writer.writeAll("<header class=\"source-summary\"><p class=\"source-meta\">X</p><h1>Checking link…</h1></header>");
+        try writer.writeAll("<header class=\"source-summary\"><h1>Checking link…</h1></header>");
     }
 }
 
@@ -156,7 +173,7 @@ fn renderProgress(writer: *std.Io.Writer, snapshot: job_mod.Snapshot, fallback_l
         const percent: u8 = @intFromFloat(@min(100.0, @max(0.0, fraction * 100.0)));
         try writer.print("</strong><span>{d}%</span></div><progress max=\"100\" value=\"{d}\">{d}%</progress>", .{ percent, percent, percent });
     } else {
-        try writer.writeAll("</strong><span>Working</span></div><progress>Working</progress>");
+        try writer.writeAll("</strong></div><progress aria-label=\"Download progress\"></progress>");
     }
     try writer.writeAll("<p class=\"progress-detail\">");
     var wrote = false;
@@ -185,7 +202,6 @@ fn renderProgress(writer: *std.Io.Writer, snapshot: job_mod.Snapshot, fallback_l
         try writer.writeAll(" left");
         wrote = true;
     }
-    if (!wrote) try writer.writeAll(fallback_label);
     try writer.writeAll("</p></section>");
 }
 
@@ -194,91 +210,33 @@ fn renderChoice(writer: *std.Io.Writer, snapshot: job_mod.Snapshot) !void {
     if (probe.instagram_plan) |plan| return renderInstagramPicker(writer, snapshot, plan);
     try writer.writeAll("<form class=\"choice-form\" method=\"post\" action=\"");
     try jobUrl(writer, snapshot.data.id, "start");
-    try writer.writeAll("\" data-nav-form data-choice-form><div class=\"choice-heading\"><p class=\"section-kicker\">Choose what to save</p><h2>Available options</h2><p>Only choices that change the resulting file are shown.</p></div>");
-
-    switch (probe.media_kind) {
-        .mixed => try writer.writeAll("<input type=\"hidden\" name=\"kind\" value=\"all\"><input type=\"hidden\" name=\"delivery\" value=\"original\"><fieldset><legend>Media</legend><label class=\"radio-row selected-static\"><span><strong>All attached media</strong><small>Photos and videos in post order, plus a ZIP</small></span></label></fieldset>"),
-        .image => try writer.writeAll("<input type=\"hidden\" name=\"kind\" value=\"image\"><input type=\"hidden\" name=\"delivery\" value=\"original\"><fieldset><legend>Media</legend><label class=\"radio-row selected-static\"><span><strong>Original photos</strong><small>No video conversion</small></span></label></fieldset>"),
-        .video => {
-            try writer.writeAll("<input type=\"hidden\" name=\"kind\" value=\"video\">");
-            try renderQualityChoices(writer, probe);
-            if (probe.item_count == 1) try renderPreparationChoices(writer, probe) else try writer.writeAll("<input type=\"hidden\" name=\"delivery\" value=\"original\">");
-        },
-        else => return,
-    }
-
-    try writer.writeAll("<div class=\"choice-action-bar\"><p data-selection-summary>");
-    try initialSelectionSummary(writer, probe);
-    try writer.writeAll("</p><button class=\"primary-action\" type=\"submit\">");
-    try writer.writeAll(if (probe.item_count > 1) "Download media" else if (probe.media_kind == .image) "Download photos" else "Download video");
-    try writer.writeAll("</button></div></form>");
-}
-
-fn renderQualityChoices(writer: *std.Io.Writer, probe: job_mod.Probe) !void {
-    if (probe.variants.len == 0) return;
-    try writer.writeAll("<fieldset class=\"choice-group\"><legend>Quality</legend>");
-    for (probe.variants, 0..) |variant, index| {
-        try writer.writeAll("<label class=\"radio-row\"><input type=\"radio\" name=\"variant\" value=\"");
-        try escapeAttribute(writer, variant.id);
-        try writer.writeAll("\"");
-        if (index == 0) try writer.writeAll(" checked");
-        if (variant.height) |height| try writer.print(" data-variant-height=\"{d}\"", .{height});
-        try writer.writeAll("><span><strong>");
-        try escape(writer, if (index == 0) "Best available" else variant.label);
-        try writer.writeAll("</strong><small>Source file");
-        if (variant.height) |height| try writer.print(" · {d}p", .{height});
-        try writer.writeAll("</small></span><span class=\"row-value\">");
-        if (variant.estimated_size_bytes) |size| {
-            if (variant.estimated_size_kind == .approximate) try writer.writeAll("~");
-            try formatBytes(writer, size);
-        } else try writer.writeAll("—");
-        try writer.writeAll("</span></label>");
-    }
-    try writer.writeAll("</fieldset>");
-}
-
-fn renderPreparationChoices(writer: *std.Io.Writer, probe: job_mod.Probe) !void {
-    try writer.writeAll("<fieldset class=\"choice-group preparation-group\"><legend>File preparation</legend><label class=\"radio-row\"><input type=\"radio\" name=\"delivery\" value=\"original\" checked><span><strong>Keep source file</strong><small>Fastest. No extra video encoding.</small></span></label><label class=\"radio-row\"><input type=\"radio\" name=\"delivery\" value=\"optimise\"><span><strong>Compatible MP4</strong><small>H.264/AAC when the source needs it.</small></span></label>");
-    if (probe.source_height) |height| {
-        if (firstLowerTarget(height) != null) {
-            try writer.writeAll("<label class=\"radio-row\"><input type=\"radio\" name=\"delivery\" value=\"downscale\"><span><strong>Smaller MP4</strong><small>Re-encode at a lower resolution.</small></span></label><div class=\"target-heights\" data-target-heights><p>Target resolution</p>");
-            var first = true;
-            inline for ([_]u32{ 2160, 1440, 1080, 720, 480, 360, 240 }) |target| {
-                if (target < height) {
-                    try writer.writeAll("<label class=\"target-chip\"><input type=\"radio\" name=\"target_height\" value=\"");
-                    try writer.print("{d}\" data-target-height=\"{d}\"", .{ target, target });
-                    if (first) {
-                        try writer.writeAll(" checked");
-                        first = false;
-                    }
-                    try writer.print("><span>{d}p</span></label>", .{target});
-                }
-            }
-            try writer.writeAll("</div>");
-        }
-    }
-    try writer.writeAll("</fieldset>");
-}
-
-fn initialSelectionSummary(writer: *std.Io.Writer, probe: job_mod.Probe) !void {
-    switch (probe.media_kind) {
-        .mixed => try writer.print("{d} items · source files", .{probe.item_count}),
-        .image => try writer.print("{d} photo{s} · source files", .{ probe.item_count, if (probe.item_count == 1) "" else "s" }),
-        .video => if (probe.variants.len > 0) {
-            const best = probe.variants[0];
-            if (best.height) |height| try writer.print("{d}p · keep source", .{height}) else try writer.writeAll("Best available · keep source");
-            if (best.estimated_size_bytes) |size| {
-                try writer.writeAll(" · ");
-                if (best.estimated_size_kind == .approximate) try writer.writeAll("~");
+    try writer.writeAll("\" data-nav-form data-choice-form><div class=\"choice-heading\"><h2>Choose resolution</h2></div><input type=\"hidden\" name=\"delivery\" value=\"original\">");
+    if (probe.media_kind == .video) {
+        try writer.writeAll("<input type=\"hidden\" name=\"kind\" value=\"video\"><div class=\"resolution-options\">");
+        for (probe.variants) |variant| {
+            try writer.writeAll("<button class=\"resolution-row\" type=\"submit\" name=\"variant\" value=\"");
+            try escapeAttribute(writer, variant.id);
+            try writer.writeAll("\"><span>");
+            try escape(writer, variant.label);
+            try writer.writeAll("</span>");
+            if (variant.estimated_size_bytes) |size| {
+                try writer.writeAll("<span class=\"row-value\">");
+                if (variant.estimated_size_kind == .approximate) try writer.writeAll("~");
                 try formatBytes(writer, size);
+                try writer.writeAll("</span>");
             }
-        } else try writer.writeAll("Best available · keep source"),
-        else => try writer.writeAll("Source file"),
+            try writer.writeAll("</button>");
+        }
+        try writer.writeAll("</div>");
+    } else {
+        // Jobs created before this release can still be waiting for a choice.
+        try writer.writeAll("<button class=\"primary-action\" type=\"submit\">Download media</button>");
     }
+    try writer.writeAll("</form>");
 }
 
 fn renderReady(writer: *std.Io.Writer, snapshot: job_mod.Snapshot) !void {
-    try writer.writeAll("<section class=\"ready-view\"><div class=\"ready-heading\" role=\"status\"><p class=\"section-kicker\">Ready</p><h2>Ready to save</h2></div>");
+    try writer.writeAll("<section class=\"ready-view\"><div class=\"ready-heading\" role=\"status\"><h2>Ready to save</h2></div>");
     try renderReadyActions(writer, snapshot, false);
     try renderPlayback(writer, snapshot);
     if (snapshot.data.expires_at) |expires_at| try writer.print("<p class=\"expiry-note\" data-expiry data-expires-at=\"{d}\">Temporary files expire automatically.</p>", .{expires_at});
@@ -431,11 +389,6 @@ fn mediaKindLabel(kind: job_mod.MediaKind) []const u8 {
     };
 }
 
-fn firstLowerTarget(height: u32) ?u32 {
-    inline for ([_]u32{ 2160, 1440, 1080, 720, 480, 360, 240 }) |target| if (target < height) return target;
-    return null;
-}
-
 fn automaticDownloadArtifact(snapshot: job_mod.Snapshot) ?[]const u8 {
     if (snapshot.data.state != .ready or snapshot.data.intent != .save_original or snapshot.data.delivery == null or snapshot.data.delivery.?.mode != .original) return null;
     if (snapshot.data.source_artifacts.len == 1) return snapshot.data.source_artifacts[0].id;
@@ -530,14 +483,8 @@ test "HTML escaping handles markup and control bytes" {
     try std.testing.expectEqualStrings("&lt;x a=&#39;1&#39;&gt;&amp;&quot;&#10;&#13;&#0;&#9;", writer.buffered());
 }
 
-test "downscale targets remain below the source" {
-    try std.testing.expectEqual(@as(?u32, 1080), firstLowerTarget(1440));
-    try std.testing.expectEqual(@as(?u32, 360), firstLowerTarget(480));
-    try std.testing.expect(firstLowerTarget(240) == null);
-}
-
 fn renderInstagramPicker(writer: *std.Io.Writer, snapshot: job_mod.Snapshot, plan: @import("instagram_plan.zig").Plan) !void {
-    try writer.writeAll("<section class=\"instagram-picker\" aria-labelledby=\"instagram-title\"><p class=\"section-kicker\">Choose what to save</p><h2 id=\"instagram-title\">Tap one photo or video</h2><p>Only the item you choose will be downloaded. No cover image is substituted for a video.</p><div class=\"instagram-grid\">");
+    try writer.writeAll("<section class=\"instagram-picker\" aria-labelledby=\"instagram-title\"><h2 id=\"instagram-title\">Choose a photo or video</h2><div class=\"instagram-grid\">");
     for (plan.items) |item| {
         try writer.print("<article class=\"instagram-item{s}\" id=\"instagram-item-{d}\">", .{ if (plan.highlighted_ordinal == item.ordinal) " is-suggested" else "", item.ordinal });
         if (item.thumbnail_url != null) {
