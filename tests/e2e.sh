@@ -287,6 +287,14 @@ PYASSET
 http -fsS "$xvid_origin$asset_url" > "$xvid_temp/served-app.js"
 cmp "$project_root/assets/app.js" "$xvid_temp/served-app.js"
 
+# The home page must reference current immutable assets, so returning browsers
+# cannot retain an obsolete client when a release changes the HTML contract.
+for extension in js css; do
+  asset_path=$(http -fsS "$xvid_origin/" | python3 -c 'import re,sys; print(re.search(r"/assets/app\." + sys.argv[1] + r"\?v=[0-9]+",sys.stdin.read()).group())' "$extension")
+  http -fsS -D "$xvid_temp/asset-cache.headers" -o /dev/null "$xvid_origin$asset_path"
+  rg -qi '^cache-control: .*immutable' "$xvid_temp/asset-cache.headers"
+done
+
 stage 'cross-site mutation rejection'
 assert_status 403 -X POST \
   -H 'Content-Type: application/x-www-form-urlencoded' \

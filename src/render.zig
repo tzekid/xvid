@@ -55,8 +55,7 @@ pub const home =
     \\  <link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
     \\  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
     \\  <link rel="manifest" href="/manifest.webmanifest">
-    \\  <link rel="stylesheet" href="/assets/app.css?v=6">
-    \\  <script src="/assets/app.js?v=6" defer></script>
+++ "\n  <link rel=\"stylesheet\" href=\"/assets/app.css?v=" ++ asset_version ++ "\">\n  <script src=\"/assets/app.js?v=" ++ asset_version ++ "\" defer></script>\n" ++
     \\</head>
     \\<body>
     \\  <main id="app" class="app-shell compose-shell" data-page-state="compose">
