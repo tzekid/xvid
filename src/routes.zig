@@ -728,7 +728,7 @@ fn responseHeaders(content_type: []const u8, cache_control: []const u8) [7]std.h
         .{ .name = "referrer-policy", .value = "same-origin" },
         .{ .name = "x-frame-options", .value = "DENY" },
         .{ .name = "permissions-policy", .value = "camera=(), microphone=(), geolocation=(), clipboard-read=(self), clipboard-write=(self)" },
-        .{ .name = "content-security-policy", .value = "default-src 'self'; base-uri 'none'; connect-src 'self' https://video.twimg.com https://pbs.twimg.com; media-src 'self' blob:; form-action 'self'; frame-ancestors 'none'; img-src 'self' data: blob:; object-src 'none'; script-src 'self'; style-src 'self'; manifest-src 'self'" },
+        .{ .name = "content-security-policy", .value = "default-src 'self'; base-uri 'none'; connect-src 'self' https://video.twimg.com https://pbs.twimg.com; media-src 'self' blob: https://video.twimg.com; form-action 'self'; frame-ancestors 'none'; img-src 'self' data: blob: https://pbs.twimg.com; object-src 'none'; script-src 'self'; style-src 'self'; manifest-src 'self'" },
     };
 }
 

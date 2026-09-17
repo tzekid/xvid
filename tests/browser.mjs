@@ -1,6 +1,7 @@
 // Real browser against the disposable E2E process. Reuse an installed Playwright
 // library via XVID_BROWSER_MODULE; no application dependency or test framework.
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import { readFile, mkdir, readdir } from 'node:fs/promises'
 import { pathToFileURL } from 'node:url'
 const { chromium } = await import(pathToFileURL(process.env.XVID_BROWSER_MODULE).href)
@@ -110,6 +111,11 @@ try {
   assert.equal(await download.textContent(), 'Download again')
   assert.equal((await manifest()).delivery.mode, 'original')
   assert.equal(await page.evaluate(() => clipboardReads), 0)
+  assert.equal(await page.getByText('Open original', { exact: true }).count(), 0)
+  assert.equal(await page.getByRole('link', { name: 'Download', exact: true }).count(), 1)
+  assert.equal(await page.getByRole('heading', { name: 'Download started', exact: true }).count(), 1)
+  assert.equal(await page.getByRole('button', { name: 'Delete files now', exact: true }).count(), 1)
+  assert.match(await page.locator('[data-direct-details]').textContent(), /^video · /)
   await shot('mobile-result')
   const firstPath = new URL(page.url()).pathname
 
@@ -176,12 +182,10 @@ try {
   // A large declared response stops before buffering it.
   await page.route('**/video/**', route => route.fulfill({ status: 200, headers: { 'access-control-allow-origin': '*', 'content-type': 'video/mp4', 'content-length': String(65 * 1024 * 1024) }, body: '' }))
   await submit(2103)
-  await page.getByText('This file is too large to prepare here. Open original to save it.', { exact: true }).waitFor()
+  await page.getByText('Use Download to save this large original.', { exact: true }).waitFor()
   await page.unroute('**/video/**')
 
   // The desktop file path writes chunks and closes only after a complete download.
-  await page.goto(new URL(page.url()).pathname.startsWith('/j/') ? `${origin}${new URL(page.url()).pathname}` : origin)
-  await state('ready')
   await page.evaluate(() => {
     window.streamed = { bytes: 0, closed: false, aborted: false }
     window.showSaveFilePicker = async () => ({ createWritable: async () => ({
@@ -204,8 +208,14 @@ try {
   assert.equal(await input.inputValue(), link(2102))
   assert.equal(await resolution.isChecked(), true)
   assert.equal(await download.textContent(), 'Download')
+  const photoZip = page.waitForEvent('download')
   await input.press('Enter')
   await state('ready')
+  await page.locator('[data-direct-bundle]').click()
+  const photoArchive = await photoZip
+  const archivePath = await photoArchive.path()
+  execFileSync('unzip', ['-t', archivePath])
+  assert.equal(execFileSync('unzip', ['-Z1', archivePath], { encoding: 'utf8' }).trim().split('\n').length, 4)
   assert.equal((await manifest()).probe.x_plan.items.length, 4)
   const photoPath = new URL(page.url()).pathname
   await page.goBack()
@@ -349,8 +359,6 @@ try {
   await phonePage.locator('#url').fill(link(2102))
   await phonePage.locator('[data-download]').click()
   const allPhotos = phonePage.getByRole('button', { name: 'Save all photos…', exact: true })
-  await allPhotos.click()
-  await phonePage.getByRole('button', { name: 'Preparing photos…', exact: true }).waitFor({ state: 'hidden' })
   await allPhotos.click()
   await phonePage.waitForFunction(() => sharedFiles?.length === 4)
   assert.deepEqual(await phonePage.evaluate(() => sharedFiles.map(file => file.type)), ['image/jpeg', 'image/png', 'image/webp', 'image/jpeg'])

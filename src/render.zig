@@ -3,7 +3,7 @@ const job_mod = @import("job.zig");
 const x = @import("x.zig");
 
 const maximum_share_bytes = 64 * 1024 * 1024;
-pub const asset_version = "7";
+pub const asset_version = "8";
 
 const composer_before_url =
     \\<div class="persistent-composer">
@@ -248,27 +248,51 @@ fn renderDirect(writer: *std.Io.Writer, snapshot: job_mod.Snapshot) !void {
     const probe = snapshot.data.probe orelse return error.InvalidProbe;
     const plan = probe.x_plan orelse return error.InvalidProbe;
     const selection = snapshot.data.selection orelse return error.InvalidSelection;
-    try writer.writeAll("<section class=\"ready-view\" data-direct-delivery><div class=\"ready-heading\" role=\"status\"><h2>Ready to download</h2></div><div class=\"artifact-list\">");
+    var title_buffer: [85]u8 = undefined;
+    var title_allocator = std.heap.FixedBufferAllocator.init(&title_buffer);
+    const title = try x.safeFilenameBase(title_allocator.allocator(), probe.title);
+    try writer.writeAll("<section class=\"ready-view\" data-direct-delivery data-bundle-name=\"");
+    try escapeAttribute(writer, title);
+    try writer.writeAll("-all.zip\"><div class=\"ready-heading\" role=\"status\"><h2>Ready to save</h2></div>");
+    if (plan.items.len > 1) try writer.writeAll("<button class=\"primary-link\" type=\"button\" data-direct-bundle hidden>Download all (.zip)</button>");
+    try writer.writeAll("<div class=\"artifact-list\">");
     for (plan.items) |item| {
         const transfer = try x.transferForSelection(item, selection);
         const video = transfer.kind == .video;
         var filename_buffer: [96]u8 = undefined;
-        const filename = try std.fmt.bufPrint(&filename_buffer, "xvid-{s}-{d}.{s}", .{ plan.status_id, item.ordinal, if (video) "mp4" else "jpg" });
+        const filename = if (plan.items.len == 1)
+            try std.fmt.bufPrint(&filename_buffer, "{s}.{s}", .{ title, if (video) "mp4" else "jpg" })
+        else
+            try std.fmt.bufPrint(&filename_buffer, "{s}-{d}.{s}", .{ title, item.ordinal, if (video) "mp4" else "jpg" });
         try writer.writeAll("<article class=\"artifact-row\" data-direct-file data-url=\"");
         try escapeAttribute(writer, transfer.url);
         try writer.writeAll("\" data-item-id=\"");
         try escapeAttribute(writer, item.id);
         try writer.writeAll("\" data-filename=\"");
         try escapeAttribute(writer, filename);
-        try writer.print("\" data-kind=\"{s}\"><div class=\"artifact-copy\"><strong>{s} {d}</strong><span>", .{ if (video) "video" else "image", if (video) "Video" else "Photo", item.ordinal });
-        try escape(writer, selection.label);
-        try writer.writeAll("</span></div><div class=\"artifact-actions\"><button class=\"primary-action\" type=\"button\" data-direct-download hidden>Download</button><button class=\"secondary-action\" type=\"button\" data-direct-share hidden>Save…</button><button class=\"text-action\" type=\"button\" data-direct-cancel hidden>Cancel</button><a class=\"download-action\" target=\"_blank\" rel=\"noreferrer\" referrerpolicy=\"no-referrer\" href=\"");
+        try writer.print("\" data-kind=\"{s}\"><div class=\"artifact-copy\"><strong>", .{if (video) "video" else "image"});
+        try escape(writer, filename);
+        try writer.print("</strong><span data-direct-details>{s}</span></div><div class=\"artifact-actions\"><button class=\"share-action\" type=\"button\" data-direct-share", .{if (video) "video" else "photo"});
+        if (plan.items.len == 1) try writer.writeAll(" data-share-primary");
+        try writer.writeAll(" hidden>Save…</button><a class=\"download-action\" data-direct-download download rel=\"noreferrer\" referrerpolicy=\"no-referrer\" href=\"");
         try escapeAttribute(writer, transfer.url);
-        try writer.writeAll("\">Open original</a></div><div class=\"device-preparation\" data-direct-progress hidden><div><span data-direct-status>Downloading…</span><span data-direct-percent></span></div><progress></progress></div><p class=\"field-error\" data-direct-error role=\"alert\" hidden></p></article>");
+        try writer.writeAll("\">Download</a></div><div class=\"device-preparation\" data-direct-progress hidden><div><span>Preparing save on this device…</span><span data-direct-percent></span></div><progress></progress><button class=\"text-action\" type=\"button\" data-direct-cancel hidden>Cancel</button></div><p class=\"field-error\" data-direct-error role=\"alert\" hidden></p></article>");
     }
     try writer.writeAll("</div>");
-    if (plan.items.len == 1) try writer.writeAll(if (plan.items[0].kind == .photo) "<img class=\"playback image-playback\" data-direct-preview hidden alt=\"Original photo\">" else "<video class=\"playback\" data-direct-preview hidden controls playsinline preload=\"metadata\"></video>");
-    if (snapshot.data.expires_at) |expires| try writer.print("<p class=\"expiry-note\" data-expiry data-direct-expiry data-expires-at=\"{d}\">Temporary links expire automatically.</p>", .{expires});
+    if (plan.items.len == 1) {
+        if (plan.items[0].kind == .photo) {
+            try writer.writeAll("<img class=\"playback image-playback\" data-direct-preview hidden alt=\"Downloaded image\">");
+        } else {
+            try writer.writeAll("<video class=\"playback\" data-direct-preview hidden controls playsinline preload=\"metadata\" crossorigin=\"anonymous\"");
+            if (plan.items[0].thumbnail_url) |poster| {
+                try writer.writeAll(" poster=\"");
+                try escapeAttribute(writer, poster);
+                try writer.writeByte('"');
+            }
+            try writer.writeAll("></video>");
+        }
+    }
+    if (snapshot.data.expires_at) |expires| try writer.print("<p class=\"expiry-note\" data-expiry data-expires-at=\"{d}\">Temporary files expire automatically.</p>", .{expires});
     try writer.writeAll("</section>");
 }
 
@@ -396,7 +420,7 @@ fn renderUtilities(writer: *std.Io.Writer, snapshot: job_mod.Snapshot) !void {
     try writer.writeAll("<footer class=\"job-utilities\"><form method=\"post\" action=\"");
     try jobUrl(writer, snapshot.data.id, "delete");
     try writer.writeAll("\" data-nav-form><button class=\"danger-action\" type=\"submit\">");
-    try writer.writeAll(if (snapshot.data.direct_delivery) "Clear" else "Delete files now");
+    try writer.writeAll("Delete files now");
     try writer.writeAll("</button></form></footer>");
 }
 

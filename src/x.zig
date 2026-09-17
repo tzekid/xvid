@@ -1108,7 +1108,7 @@ fn alignRefreshedProbe(allocator: std.mem.Allocator, original: job_mod.Probe, re
     return aligned;
 }
 
-fn safeFilenameBase(allocator: std.mem.Allocator, title: []const u8) ![]const u8 {
+pub fn safeFilenameBase(allocator: std.mem.Allocator, title: []const u8) ![]const u8 {
     const maximum = @min(title.len, 80);
     const output = try allocator.alloc(u8, maximum + 5);
     var length: usize = 0;

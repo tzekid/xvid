@@ -32,10 +32,11 @@ For X originals, JavaScript downloads with credentials omitted and no referrer.
 It checks the media signature and transfer length, supports cancellation, and
 refreshes an expired link once for the same item and resolution. There is no
 silent server proxy. Browsers with a file picker can stream a manually requested
-video to disk (up to 4 GiB). Other downloads and native file sharing use a bounded
-64 MiB buffer; larger files can be opened directly with **Open original**.
-Multi-photo posts offer individual files and, where supported, a bounded photo
-share group. X originals no longer create server ZIP archives. Temporary result
+video to disk (up to 4 GiB). Other downloads and native file sharing prepare files up to 64 MiB. The existing
+**Download** control opens larger originals directly in browsers without a file
+picker. The existing multi-file ZIP action builds an uncompressed archive in the
+browser, with the same 64 MiB aggregate preparation bound. Multi-photo sharing
+remains available on iOS. Temporary result
 pages expire independently of any CDN URL expiration.
 
 ## Runtime

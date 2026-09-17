@@ -281,10 +281,6 @@ progress::-moz-progress-bar { border-radius: 1rem; background: var(--accent); }
 .download-action, .share-action { display: inline-flex; min-height: 3rem; align-items: center; justify-content: center; border: 1px solid var(--control-line); padding: 0.625rem 1rem; background: var(--surface); color: var(--ink); font-size: 0.875rem; text-decoration: none; }
 .share-action[data-share-primary], .artifact-row:only-child .download-action { border-color: var(--accent); background: var(--accent); color: var(--accent-ink); }
 .artifact-row:only-child .share-action:not([hidden]) + .download-action { border-color: var(--control-line); background: var(--surface); color: var(--ink); }
-[data-direct-file] > .field-error { grid-column: 1 / -1; }
-[data-direct-file] .artifact-actions { max-width: 22rem; }
-.artifact-row[data-direct-file] a.download-action { border-color: var(--control-line); background: var(--surface); color: var(--ink); }
-.artifact-row[data-direct-file] a.download-action:hover { background: var(--soft); }
 .device-preparation { grid-column: 1 / -1; margin-top: 0.25rem; padding-top: 0.5rem; }
 .device-preparation > div { display: flex; justify-content: space-between; gap: 1rem; color: var(--muted); font-size: 0.8125rem; }
 .device-preparation progress { margin-top: 0.625rem; }
