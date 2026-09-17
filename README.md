@@ -1,122 +1,59 @@
 # xvid
 
-xvid is a small, mobile-first utility for saving photos and videos from public
-X/Twitter status links and public Instagram posts/Reels.
+**Paste a link. Keep the original.**
 
-Production is one Zig executable behind Caddy. For X originals, it resolves metadata
-and returns the selected media links. The browser fetches the files directly from
-X's reviewed CDN hosts, without sending video bytes through the VPS or staging
-media on its disk. Instagram retains its existing server download path.
-The explicit conversion API remains available for older clients. Jobs are temporary
-filesystem directories; normalized usage records live in SQLite.
+Xvid saves videos and photos from public X and Instagram posts. It picks the best
+available quality for you, so most downloads start with a single paste.
 
-## User journeys
+**[Open Xvid](https://xvid.plosca.ru/)** · [Run it yourself](docs/DEVELOPMENT.md)
 
-- **Basic:** paste a link, automatically download the best source media, then
-  save or share it. There is no format-choice screen.
-- **Choose resolution:** enable the switch, then Paste or Download the current
-  link. Tap a source resolution to download that rendition without re-encoding.
-  Posts with no resolution choice continue automatically.
+<p align="center">
+  <img src="docs/images/xvid-home.png" width="608" alt="Xvid’s start screen: a link field, an optional resolution switch, and a large Paste button.">
+</p>
 
-Instagram carousels first show an ordered picker. Tap **Save this photo/video**
-to acquire only that child; unselected full-size files are not downloaded.
-Single-item Instagram posts retain the automatic Basic journey. Access is
-logged-out and provider-dependent: challenges, incomplete metadata and unavailable
-items are reported explicitly. See [Instagram scope and verification](docs/instagram/UPSTREAM.md).
+## A short path from link to file
 
-The server renders normal HTML forms. JavaScript adds live updates, clipboard
-handling, automatic desktop downloads, and the bounded iOS share action. The
-form journey still works without JavaScript.
+Leave **Choose resolution** off to get the best available version. Turn it on
+when you want a smaller file, then tap the resolution you want. Xvid keeps your
+link in place, so you can try another size without starting over.
 
-For X originals, JavaScript downloads with credentials omitted and no referrer.
-It checks the media signature and transfer length, supports cancellation, and
-refreshes an expired link once for the same item and resolution. There is no
-silent server proxy. Browsers with a file picker can stream a manually requested
-video to disk (up to 4 GiB). Other downloads and native file sharing prepare files up to 64 MiB. The existing
-**Download** control opens larger originals directly in browsers without a file
-picker. The existing multi-file ZIP action builds an uncompressed archive in the
-browser, with the same 64 MiB aggregate preparation bound. Multi-photo sharing
-remains available on iOS. Temporary result
-pages expire independently of any CDN URL expiration.
+<p align="center">
+  <img src="docs/images/xvid-download.png" width="900" alt="A completed Xvid download, with the original link retained, Share and Download controls, and a video preview.">
+</p>
 
-## Runtime
+On iPhone, the save button opens the familiar sharing options. Posts with several
+photos can be saved together; on desktop, **Download all** puts a post’s files
+into one ZIP. For an Instagram carousel, you choose the photo or video you want.
 
-```text
-browser -> Caddy -> xvid -> X metadata
-browser ----------------> X media CDN (original files)
+## Keep the quality
 
-Instagram and legacy conversions:
-browser -> Caddy -> xvid -> media CDN -> FFprobe / optional FFmpeg
-```
+Xvid doesn’t recompress the file you choose. For X downloads, the server finds
+the available versions and your browser gets the media directly from X. The
+video doesn’t need to make a detour through the server’s disk first.
 
-There is no generic extractor, Python service, Deno runtime, frontend framework,
-Redis, account system, or permanent media library.
+Instagram uses the existing server download path. Temporary download pages
+expire automatically; Xvid isn’t a permanent media library.
 
-## Build and test
+<details>
+<summary>Availability and larger files</summary>
 
-The Zig revision is pinned in `.zigversion`. Development requires SQLite 3.
-The E2E journey and production also require FFmpeg/FFprobe with the MPEG-4,
-H.264 (`libx264`), and AAC codecs available in the normal distribution package.
-Missing tools fail the journey; real conversion is never skipped.
+Xvid works with public posts. Private posts, login walls, and provider restrictions
+can prevent a download; Instagram Stories and profiles aren’t supported.
 
-```bash
-zig build test -Doptimize=ReleaseSafe
-zig build e2e -Doptimize=ReleaseSafe
-zig build -Doptimize=ReleaseSafe
-```
+Preparing a file for browser download or sharing is limited to 64 MiB. ZIPs share
+that limit across their files. For larger videos, **Download** can stream to a
+file in browsers with a file picker, up to 4 GiB. Other browsers open the original
+so you can use their own save controls. The exact saving options depend on your
+browser and device.
 
-`zig build test` covers focused parsing, validation, state, and rendering logic.
-`zig build e2e` launches the real xvid binary with deterministic Zig fixtures
-and exercises the important HTTP, persistence, acquisition, conversion, Range,
-cancellation, recovery, usage, and cleanup paths. A separate disposable instance
-uses real tools to convert a generated one-second MPEG-4/AAC clip to H.264/AAC;
-the HTTP-delivered file is probed for dimensions/pixel format/duration and decoded
-in full. Synthetic fixtures remain for deliberate encoder failure and a stalled
-encoder with a TERM-ignoring descendant. All upstream traffic is loopback fixture
-traffic; these checks do not depend on live X availability.
+</details>
 
-For browser coverage, reuse an installed Playwright library and Chromium:
+## Run your own copy
 
-```bash
-XVID_BROWSER_MODULE=/absolute/path/to/playwright-core/index.mjs \
-XVID_BROWSER_SCREENSHOTS=/tmp/xvid-browser \
-zig build e2e -Doptimize=ReleaseSafe
-```
+The web app is a Zig server with ordinary HTML, CSS, and JavaScript. It resolves
+posts itself, which keeps the path from pasting a link to saving a file short.
 
-This also exercises the disposable server with JavaScript and native forms,
-direct cross-origin downloads, expired-link refresh, cancellation, chunked responses,
-size limits, file streaming, resolution selection, clipboard replacements/failures, edited
-links, reload/history, and phone/desktop layouts. Clipboard permission responses
-are simulated; actual iPhone paste prompts and sharing require a device check.
-
-## Production
-
-Verified pushes to `master` deploy automatically. A one-minute user-systemd
-timer waits for the exact commit's GitHub `Verify` run to pass, then builds and
-installs that revision on the VPS. It does not touch the development checkout.
-
-For a manual verified deployment:
-
-```bash
-./scripts/vps_deploy.sh
-```
-
-The manual script runs the existing Zig checks before using the same install,
-rollback, restart, and readiness path as automatic deployment.
-
-Useful commands:
-
-```bash
-~/.local/lib/xvid/xvid version
-~/.local/lib/xvid/xvid doctor --config ~/.config/xvid/config.json
-~/.local/lib/xvid/xvid jobs --data ~/.local/share/xvid
-~/.local/lib/xvid/xvid inspect --data ~/.local/share/xvid <job-id>
-~/.local/lib/xvid/xvid prune --data ~/.local/share/xvid --dry-run
-./scripts/check-x-upstream.sh
-```
-
-`inspect` omits submitted and provider transport URLs. Media expiry and manual
-deletion do not remove the durable normalized usage rows.
-
-Operational details are in [OPERATIONS.md](OPERATIONS.md). The unstable native-X
-protocol provenance is recorded in [docs/x/UPSTREAM.md](docs/x/UPSTREAM.md).
+To build or run it on Linux, start with the [development guide](docs/DEVELOPMENT.md).
+For a hosted installation, see [operations and deployment](OPERATIONS.md).
+The provider notes explain how the [X](docs/x/UPSTREAM.md) and
+[Instagram](docs/instagram/UPSTREAM.md) integrations work.
