@@ -480,16 +480,222 @@
     if (!element || !Number.isFinite(expires)) return () => {}
     const render = () => {
       const remaining = Math.max(0, expires - Math.floor(Date.now() / 1000))
+      const subject = element.hasAttribute('data-direct-expiry') ? 'Links' : 'Temporary files'
       element.textContent = remaining > 60
-        ? `Temporary files expire in ${Math.ceil(remaining / 60)} min`
-        : remaining > 0 ? `Temporary files expire in ${remaining}s` : 'Temporary files are expiring'
+        ? `${subject} expire in ${Math.ceil(remaining / 60)} min`
+        : remaining > 0 ? `${subject} expire in ${remaining}s` : `${subject} are expiring`
     }
     render()
     const timer = setInterval(render, 1000)
     return () => clearInterval(timer)
   }
 
+  // Original X files go straight to the reviewed CDN. Keep bytes out of the server.
+  const enhanceDirect = (root) => {
+    const section = root.querySelector('[data-direct-delivery]')
+    if (!section) return null
+    const rows = [...section.querySelectorAll('[data-direct-file]')]
+    const running = new Map()
+    const files = new Map()
+    const objectUrls = new Map()
+    let closed = false
+    const expiryCleanup = updateExpiry(root)
+    const allowed = (raw, kind) => {
+      const url = new URL(raw)
+      const fixture = location.hostname === '127.0.0.1' && url.hostname === '127.0.0.1' && url.protocol === 'http:'
+      if (!fixture && (url.protocol !== 'https:' || url.port && url.port !== '443' || url.hostname !== (kind === 'video' ? 'video.twimg.com' : 'pbs.twimg.com'))) throw new Error('The media address was rejected.')
+      if (url.username || url.password || url.hash) throw new Error('The media address was rejected.')
+      return url.href
+    }
+    const report = (row, text) => { const e = row.querySelector('[data-direct-error]'); e.textContent = text; e.hidden = !text }
+    const progress = (row, loaded, total) => {
+      const panel = row.querySelector('[data-direct-progress]'); panel.hidden = false
+      const bar = panel.querySelector('progress')
+      if (total > 0) { bar.max = total; bar.value = loaded } else { bar.removeAttribute('value'); bar.removeAttribute('max') }
+      panel.querySelector('[data-direct-percent]').textContent = total > 0 ? `${Math.floor(loaded / total * 100)}%` : `${(loaded / 1048576).toFixed(1)} MB`
+    }
+    const refresh = async (row, signal) => {
+      const response = await fetch(`${location.pathname}/refresh`, { method: 'POST', body: new URLSearchParams({ item_id: row.dataset.itemId }), credentials: 'same-origin', signal })
+      if (!response.ok) throw new Error('The original could not be refreshed. Download the post again.')
+      row.dataset.url = allowed((await response.json()).url, row.dataset.kind)
+      row.querySelector('a').href = row.dataset.url
+    }
+    const receive = async (row, controller, writable, budget = maxShareBytes) => {
+      let response
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          response = await fetch(allowed(row.dataset.url, row.dataset.kind), { credentials: 'omit', referrerPolicy: 'no-referrer', signal: controller.signal })
+          if (attempt === 0 && [403, 404, 410].includes(response.status)) { await response.body?.cancel(); await refresh(row, controller.signal); continue }
+          break
+        } catch (error) {
+          if (attempt || controller.signal.aborted || !(error instanceof TypeError)) throw error
+          await refresh(row, controller.signal)
+        }
+      }
+      if (!response?.ok || response.status !== 200 || !response.body) throw new Error('The original could not be downloaded. Try again.')
+      allowed(response.url, row.dataset.kind)
+      const total = Number(response.headers.get('content-length')) || 0
+      const limit = writable ? 4 * 1024 ** 3 : budget
+      if (total > limit) { await response.body.cancel(); throw new Error(writable ? 'This original is too large.' : 'This file is too large to prepare here. Open original to save it.') }
+      const reader = response.body.getReader()
+      const chunks = []
+      let loaded = 0
+      let signature = new Uint8Array()
+      let checked = false
+      let mime = ''
+      const check = () => {
+        const text = new TextDecoder('ascii').decode(signature)
+        if (row.dataset.kind === 'video' && text.slice(4, 8) === 'ftyp') mime = 'video/mp4'
+        if (row.dataset.kind === 'image') {
+          if (signature[0] === 255 && signature[1] === 216 && signature[2] === 255) mime = 'image/jpeg'
+          else if (signature[0] === 137 && text.slice(1, 4) === 'PNG') mime = 'image/png'
+          else if (text.startsWith('RIFF') && text.slice(8, 12) === 'WEBP') mime = 'image/webp'
+        }
+        if (!mime) throw new Error('The response was not the requested media file.')
+        checked = true
+      }
+      let lastUpdate = 0
+      try {
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          controller.signal.throwIfAborted()
+          loaded += value.byteLength
+          if (loaded > limit) throw new Error('This file is too large to prepare here. Open original to save it.')
+          if (!checked) {
+            const head = new Uint8Array(Math.min(32, signature.length + value.length))
+            head.set(signature); head.set(value.subarray(0, head.length - signature.length), signature.length); signature = head
+            if (signature.length >= 12) check()
+          }
+          if (writable) await writable.write(value)
+          else chunks.push(value)
+          if (performance.now() - lastUpdate > 100) { progress(row, loaded, total); lastUpdate = performance.now() }
+        }
+        if (!checked) check()
+        if (!loaded || total && loaded !== total) throw new Error('The download was incomplete. Try again.')
+        controller.signal.throwIfAborted()
+        if (writable) { await writable.close(); return null }
+        const extension = mime === 'image/png' ? 'png' : mime === 'image/webp' ? 'webp' : mime === 'video/mp4' ? 'mp4' : 'jpg'
+        return new File(chunks, row.dataset.filename.replace(/\.[^.]+$/, `.${extension}`), { type: mime })
+      } catch (error) { await reader.cancel().catch(() => {}); throw error }
+    }
+    const fileUrl = (file) => {
+      if (!objectUrls.has(file)) objectUrls.set(file, URL.createObjectURL(file))
+      return objectUrls.get(file)
+    }
+    const downloadBlob = (file) => {
+      const url = fileUrl(file)
+      const link = document.createElement('a'); link.href = url; link.download = file.name; link.hidden = true
+      document.body.append(link); link.click(); link.remove()
+    }
+    const run = async (row, action) => {
+      if (closed || running.has(row)) return
+      report(row, '')
+      const button = row.querySelector('[data-direct-download]')
+      const share = row.querySelector('[data-direct-share]')
+      const cancel = row.querySelector('[data-direct-cancel]')
+      const controller = new AbortController(); running.set(row, controller); pendingControllers.add(controller)
+      button.disabled = true; share.disabled = true; cancel.hidden = false
+      let writable
+      try {
+        // Obtain the file handle during the user's click; the network must not consume activation first.
+        if (action === 'download' && !isIOS && typeof window.showSaveFilePicker === 'function' && row.dataset.kind === 'video' && !files.has(row)) {
+          const handle = await window.showSaveFilePicker({ suggestedName: row.dataset.filename })
+          controller.signal.throwIfAborted()
+          writable = await handle.createWritable()
+        }
+        const file = files.get(row) || await receive(row, controller, writable)
+        controller.signal.throwIfAborted()
+        if (closed || !row.isConnected) return
+        if (file) {
+          if (!files.has(row)) {
+            let retained = [...files.values()].reduce((sum, value) => sum + value.size, file.size)
+            for (const [oldRow, oldFile] of files) {
+              if (retained <= maxShareBytes) break
+              URL.revokeObjectURL(objectUrls.get(oldFile)); objectUrls.delete(oldFile); files.delete(oldRow); retained -= oldFile.size
+            }
+            files.set(row, file)
+          }
+          if (rows.length === 1) {
+            const preview = section.querySelector('[data-direct-preview]')
+            if (preview && !preview.getAttribute('src')) { preview.src = fileUrl(file); preview.hidden = false }
+          }
+          const canShare = typeof navigator.canShare === 'function' && navigator.canShare({ files: [file] })
+          share.hidden = !canShare
+          share.textContent = isIOS ? (row.dataset.kind === 'video' ? 'Save video…' : 'Save photo…') : 'Share…'
+          if (action === 'share' && canShare) {
+            if (navigator.userActivation && !navigator.userActivation.isActive) { share.textContent = 'Tap to open save options'; return }
+            await navigator.share({ files: [file], title: file.name })
+          } else if (action === 'download' || action === 'auto' && !isIOS) downloadBlob(file)
+          button.textContent = 'Download again'
+        } else { button.textContent = 'Saved'; writable = null }
+      } catch (error) {
+        if (writable) await writable.abort().catch(() => {})
+        if (!closed && row.isConnected) report(row, error.name === 'AbortError' ? 'Cancelled' : error.message || 'The download was interrupted. Try again.')
+      } finally {
+        controller.abort(); running.delete(row); pendingControllers.delete(controller)
+        button.disabled = false; share.disabled = false; cancel.hidden = true; row.querySelector('[data-direct-progress]').hidden = true
+      }
+    }
+    rows.forEach((row) => {
+      const button = row.querySelector('[data-direct-download]'); button.hidden = false
+      button.onclick = () => void run(row, 'download')
+      const share = row.querySelector('[data-direct-share]')
+      if (isIOS && navigator.share && navigator.canShare) { share.hidden = false; share.textContent = row.dataset.kind === 'video' ? 'Save video…' : 'Save photo…' }
+      share.onclick = () => void run(row, 'share')
+      row.querySelector('[data-direct-cancel]').onclick = () => running.get(row)?.abort()
+    })
+    // Retain the existing one-action photo share, with one budget for the group.
+    if (rows.length > 1 && rows.every(row => row.dataset.kind === 'image') && navigator.share && navigator.canShare) {
+      const group = document.createElement('button')
+      group.type = 'button'; group.className = 'primary-action photo-share-action'; group.textContent = 'Save all photos…'
+      section.querySelector('.artifact-list').before(group)
+      let photos = null
+      group.onclick = async () => {
+        if (closed || running.size) return
+        if (photos) { try { await navigator.share({ files: photos }) } catch (error) { if (error.name !== 'AbortError') report(rows[0], 'Could not open save options. Try again.') }; return }
+        const controller = new AbortController(); pendingControllers.add(controller)
+        group.disabled = true; group.textContent = 'Preparing photos…'
+        rows.forEach(row => running.set(row, controller))
+        const prepared = []
+        let remaining = maxShareBytes
+        try {
+          for (const row of rows) {
+            running.set(row, controller)
+            row.querySelector('[data-direct-cancel]').hidden = false
+            const file = files.get(row) || await receive(row, controller, null, remaining)
+            remaining -= file.size
+            if (remaining < 0) throw new Error('These photos are too large to save together. Save them individually.')
+            prepared.push(file)
+          }
+          if (closed) return
+          if (!navigator.canShare({ files: prepared })) throw new Error('Save these photos individually.')
+          photos = prepared
+          rows.forEach((row, index) => files.set(row, prepared[index]))
+          // Opening the sheet must happen in a fresh tap after asynchronous preparation.
+          group.textContent = 'Save all photos…'
+        } catch (error) {
+          if (!closed) report(rows[0], error.name === 'AbortError' ? 'Cancelled' : error.message)
+          group.textContent = 'Save all photos…'
+        } finally {
+          controller.abort(); pendingControllers.delete(controller); group.disabled = false
+          rows.forEach(row => { running.delete(row); row.querySelector('[data-direct-cancel]').hidden = true; row.querySelector('[data-direct-progress]').hidden = true })
+        }
+      }
+    }
+    const app = section.closest('#app')
+    if (rows.length === 1 && app?.hasAttribute('data-auto-start') && !pageHidden) {
+      const key = `xvid-auto:${app.dataset.jobId || location.pathname}`
+      let started = false
+      try { started = sessionStorage.getItem(key) === '1'; sessionStorage.setItem(key, '1') } catch {}
+      if (!started) void run(rows[0], 'auto')
+    }
+    return () => { closed = true; expiryCleanup(); running.forEach(c => c.abort()); files.clear(); objectUrls.forEach(url => URL.revokeObjectURL(url)) }
+  }
+
   const enhanceState = (root) => {
+    const directCleanup = enhanceDirect(root)
+    if (directCleanup) return directCleanup
     revealShares(root)
     triggerAutomaticDownload(root)
     const expiryCleanup = updateExpiry(root)

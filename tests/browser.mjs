@@ -9,7 +9,10 @@ const initialJobs = new Set(await readdir(`${dataRoot}/jobs`))
 const browser = await chromium.launch({ executablePath: process.env.XVID_BROWSER_BIN || '/usr/bin/chromium', headless: true, args: ['--no-sandbox'] })
 const shots = process.env.XVID_BROWSER_SCREENSHOTS
 if (shots) await mkdir(shots, { recursive: true })
-const context = await browser.newContext({ viewport: { width: 390, height: 844 } })
+// Fixtures use a second loopback port instead of the production CDN allowlist.
+// CORS and Fetch credential/referrer rules remain active.
+const context = await browser.newContext({ bypassCSP: true, viewport: { width: 390, height: 844 } })
+context.setDefaultTimeout(15000)
 await context.addInitScript(() => {
   window.clipboardValue = ''
   window.clipboardReads = 0
@@ -23,6 +26,8 @@ await context.addInitScript(() => {
   } })
 })
 const page = await context.newPage()
+const mediaRequests = []
+page.on('request', request => { if (/\/(video|media)\//.test(new URL(request.url()).pathname)) mediaRequests.push(request) })
 const errors = []
 page.on('pageerror', (error) => errors.push(error.message))
 let creates = 0
@@ -90,10 +95,16 @@ try {
   await input.fill(link(2103))
   await resolution.uncheck()
   const beforeFastRepeat = creates
+  const originalDownload = page.waitForEvent('download')
   await download.click()
   await page.waitForSelector('#app[data-job-id]:not([aria-busy])')
   await download.click()
   await state('ready')
+  const originalFile = await originalDownload
+  assert.match((await readFile(await originalFile.path())).toString(), /height=1080/)
+  assert.equal(await originalFile.failure(), null)
+  assert.equal((await manifest()).direct_delivery, true)
+  assert.equal((await manifest()).source_artifacts.length, 0)
   assert.equal(creates, beforeFastRepeat + 1)
   assert.equal(await input.inputValue(), link(2103))
   assert.equal(await download.textContent(), 'Download again')
@@ -111,14 +122,81 @@ try {
   assert.equal(await page.locator('[name="delivery"]').inputValue(), 'original')
   await shot('mobile-resolution')
   const beforeChoice = creates
+  const selectedDownload = page.waitForEvent('download')
   await page.locator('[name="variant"][value="video-720"]').click()
   await state('ready')
   assert.equal(creates, beforeChoice)
   const chosen = await manifest()
   assert.equal(chosen.selection.variant_id, 'video-720')
   assert.equal(chosen.delivery.mode, 'original')
-  const artifact = await context.request.get(`${origin}${new URL(page.url()).pathname}/artifact/file-1?download=1`)
-  assert.match((await artifact.body()).toString(), /height=720/)
+  const selectedFile = await selectedDownload
+  assert.match((await readFile(await selectedFile.path())).toString(), /height=720/)
+  assert.equal(await selectedFile.failure(), null)
+
+  // Actual cross-origin fetches must omit referrer and credentials.
+  assert.ok(mediaRequests.length >= 2)
+  for (const request of mediaRequests) {
+    const headers = await request.allHeaders()
+    assert.equal(headers.referer, undefined)
+    assert.equal(headers.cookie, undefined)
+  }
+
+  // An expired link refreshes metadata once and preserves the selected quality.
+  let cdnAttempts = 0
+  let refreshes = 0
+  const countRefresh = request => { if (new URL(request.url()).pathname.endsWith('/refresh')) refreshes++ }
+  page.on('request', countRefresh)
+  await page.route('**/video/**', async route => {
+    cdnAttempts++
+    if (cdnAttempts === 1) await route.fulfill({ status: 403, headers: { 'access-control-allow-origin': '*' }, body: 'expired' })
+    else await route.continue()
+  })
+  const renewed = page.waitForEvent('download')
+  await submit(2103)
+  assert.match((await readFile(await (await renewed).path())).toString(), /height=1080/)
+  assert.equal(cdnAttempts, 2)
+  assert.equal(refreshes, 1)
+  await page.unroute('**/video/**')
+  page.off('request', countRefresh)
+
+  // The transfer is cancellable on the device without changing the ready metadata.
+  await submit(2130)
+  await page.locator('[data-direct-cancel]:visible').click()
+  await page.getByText('Cancelled', { exact: true }).waitFor()
+  assert.equal((await manifest()).state, 'ready')
+  assert.equal((await manifest()).source_artifacts.length, 0)
+
+  // Chunked media works without a declared length; malformed media never downloads.
+  const chunked = page.waitForEvent('download')
+  await submit(2131)
+  assert.equal((await readFile(await (await chunked).path())).length, 8 * 1024 * 1024 + 1)
+  await submit(2127)
+  await page.getByText('The response was not the requested media file.', { exact: true }).waitFor()
+
+  // A large declared response stops before buffering it.
+  await page.route('**/video/**', route => route.fulfill({ status: 200, headers: { 'access-control-allow-origin': '*', 'content-type': 'video/mp4', 'content-length': String(65 * 1024 * 1024) }, body: '' }))
+  await submit(2103)
+  await page.getByText('This file is too large to prepare here. Open original to save it.', { exact: true }).waitFor()
+  await page.unroute('**/video/**')
+
+  // The desktop file path writes chunks and closes only after a complete download.
+  await page.goto(new URL(page.url()).pathname.startsWith('/j/') ? `${origin}${new URL(page.url()).pathname}` : origin)
+  await state('ready')
+  await page.evaluate(() => {
+    window.streamed = { bytes: 0, closed: false, aborted: false }
+    window.showSaveFilePicker = async () => ({ createWritable: async () => ({
+      write: async chunk => { streamed.bytes += chunk.byteLength },
+      close: async () => { streamed.closed = true },
+      abort: async () => { streamed.aborted = true }
+    }) })
+  })
+  await page.locator('[data-direct-download]').click()
+  await page.waitForFunction(() => streamed.closed)
+  assert.ok((await page.evaluate(() => streamed.bytes)) > 12)
+  assert.equal(await page.evaluate(() => streamed.aborted), false)
+  await page.evaluate(() => { delete window.showSaveFilePicker })
+
+  await resolution.check()
 
   // Drafts survive stream updates, reload and history. Enter uses the visible URL.
   await input.fill(link(2102))
@@ -128,7 +206,7 @@ try {
   assert.equal(await download.textContent(), 'Download')
   await input.press('Enter')
   await state('ready')
-  assert.equal((await manifest()).source_artifacts.length, 4)
+  assert.equal((await manifest()).probe.x_plan.items.length, 4)
   const photoPath = new URL(page.url()).pathname
   await page.goBack()
   await state('ready')
@@ -155,7 +233,7 @@ try {
   })
   await state('ready')
   assert.equal(creates, beforeDouble + 1)
-  assert.equal((await manifest()).source_artifacts.length, 2)
+  assert.equal((await manifest()).probe.x_plan.items.length, 2)
   assert.equal(await input.inputValue(), link(2104))
   await page.evaluate(() => { clipboardDelay = 0; clipboardBlocked = true })
   await page.locator('[data-paste]').click()
@@ -170,13 +248,13 @@ try {
   await page.locator('[data-paste]').click()
   await page.waitForFunction(() => document.querySelector('[data-link-error]').textContent.includes('unavailable'))
   await submit(2105, true)
-  assert.equal((await manifest()).source_artifacts.length, 3)
+  assert.equal((await manifest()).probe.x_plan.items.length, 3)
 
   // A new job supersedes an old transfer while preserving an edited draft.
   await input.fill(link(2130))
   await resolution.uncheck()
   await download.click()
-  await state('working')
+  await state('ready')
   await input.fill(link(2103))
   await page.waitForTimeout(300)
   assert.equal(await input.inputValue(), link(2103))
@@ -243,6 +321,40 @@ try {
   assert.equal(await nativePage.locator('#url').inputValue(), link(2103))
   assert.equal(await nativePage.locator('[data-download]').textContent(), 'Download again')
   await native.close()
+  console.log('Browser desktop journeys passed')
+  await page.goto(origin)
+  for (const id of (await readdir(`${dataRoot}/jobs`)).filter(id => !initialJobs.has(id))) await context.request.post(`${origin}/j/${id}/delete`, { form: {} })
+  // The iPhone UI prepares a shareable File and requires an explicit sheet tap.
+  const phone = await browser.newContext({ bypassCSP: true, userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1', viewport: { width: 390, height: 844 } })
+  await phone.addInitScript(() => {
+    navigator.canShare = ({ files }) => files.length > 0
+    navigator.share = async ({ files }) => { window.sharedFiles = files.map(file => ({ size: file.size, type: file.type, name: file.name })) }
+  })
+  const phonePage = await phone.newPage()
+  phonePage.on('pageerror', error => errors.push(error.message))
+  phonePage.on('response', response => { if (new URL(response.url()).pathname.endsWith('/events') && response.status() !== 200) console.log('Phone events HTTP:', response.status()) })
+  await phonePage.goto(origin)
+  await phonePage.locator('#url').fill(link(2103))
+  await phonePage.locator('[data-download]').click()
+  try { await phonePage.waitForSelector('[data-direct-preview][src]', { timeout: 10000 }) } catch (error) {
+    console.log('Phone fixture state:', await phonePage.locator('#app').innerText())
+    const phoneId = await phonePage.locator('#app').getAttribute('data-job-id')
+    if (phoneId) console.log('Phone server state:', JSON.parse(await readFile(`${dataRoot}/jobs/${phoneId}/job.json`, 'utf8')).state)
+    if (shots) await phonePage.screenshot({ path: `${shots}/phone-failure.png`, fullPage: true })
+    throw error
+  }
+  await phonePage.locator('[data-direct-share]').click()
+  await phonePage.waitForFunction(() => sharedFiles?.length === 1)
+  assert.equal(await phonePage.evaluate(() => sharedFiles[0].type), 'video/mp4')
+  await phonePage.locator('#url').fill(link(2102))
+  await phonePage.locator('[data-download]').click()
+  const allPhotos = phonePage.getByRole('button', { name: 'Save all photos…', exact: true })
+  await allPhotos.click()
+  await phonePage.getByRole('button', { name: 'Preparing photos…', exact: true }).waitFor({ state: 'hidden' })
+  await allPhotos.click()
+  await phonePage.waitForFunction(() => sharedFiles?.length === 4)
+  assert.deepEqual(await phonePage.evaluate(() => sharedFiles.map(file => file.type)), ['image/jpeg', 'image/png', 'image/webp', 'image/jpeg'])
+  await phone.close()
   assert.deepEqual(errors, [])
   assert.notEqual(firstPath, photoPath)
   console.log('Browser E2E passed: original resolutions, drafts, repeat/paste, failures, races, history, native forms and responsive layout')

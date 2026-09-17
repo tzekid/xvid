@@ -4,6 +4,7 @@ const fixture_poster = @embedFile("fixture_poster");
 const State = struct {
     real_video: ?[]const u8 = null,
     guest_activations: u32 = 0,
+    media_requests: u32 = 0,
     refresh_requests: u8 = 0,
     refresh_plan_requests: u8 = 0,
     transient_drop_graphql: u8 = 0,
@@ -43,6 +44,12 @@ fn serve(io: std.Io, allocator: std.mem.Allocator, stream: std.Io.net.Stream, or
 
     if (request.head.method == .GET and std.mem.eql(u8, request.head.target, "/ready")) {
         return textResponse(&request, .ok, "ready\n");
+    }
+    if (std.mem.eql(u8, request.head.target, "/stats")) return jsonResponse(&request, .ok, try std.fmt.allocPrint(allocator, "{{\"media_requests\":{d}}}", .{state.media_requests}));
+    if (std.mem.startsWith(u8, request.head.target, "/media/") or std.mem.startsWith(u8, request.head.target, "/video/")) {
+        state.media_requests += 1;
+        var headers = request.iterateHeaders();
+        while (headers.next()) |h| if (std.ascii.eqlIgnoreCase(h.name, "referer")) return textResponse(&request, .forbidden, "omit the referrer");
     }
     if (request.head.method == .POST and std.mem.eql(u8, request.head.target, "/guest")) {
         state.guest_activations += 1;
@@ -343,7 +350,7 @@ fn textResponse(request: *std.http.Server.Request, status: std.http.Status, body
 }
 
 fn imageResponse(request: *std.http.Server.Request, content_type: []const u8, body: []const u8) !void {
-    return request.respond(body, .{ .extra_headers = &.{.{ .name = "content-type", .value = content_type }} });
+    return request.respond(body, .{ .extra_headers = &.{ .{ .name = "content-type", .value = content_type }, .{ .name = "access-control-allow-origin", .value = "*" } } });
 }
 
 fn streamSlow(io: std.Io, request: *std.http.Server.Request) !void {
@@ -351,7 +358,7 @@ fn streamSlow(io: std.Io, request: *std.http.Server.Request) !void {
     var response_buffer: [16 * 1024]u8 = undefined;
     var response = try request.respondStreaming(&response_buffer, .{
         .content_length = total,
-        .respond_options = .{ .extra_headers = &.{.{ .name = "content-type", .value = "image/jpeg" }} },
+        .respond_options = .{ .extra_headers = &.{ .{ .name = "content-type", .value = "image/jpeg" }, .{ .name = "access-control-allow-origin", .value = "*" } } },
     });
     var chunk: [64 * 1024]u8 = @splat(0x62);
     @memcpy(chunk[0..3], "\xff\xd8\xff");
@@ -371,7 +378,7 @@ fn streamActualLarge(io: std.Io, request: *std.http.Server.Request) !void {
     const total: usize = 8 * 1024 * 1024 + 1;
     var response_buffer: [16 * 1024]u8 = undefined;
     var response = try request.respondStreaming(&response_buffer, .{
-        .respond_options = .{ .extra_headers = &.{.{ .name = "content-type", .value = "image/jpeg" }} },
+        .respond_options = .{ .extra_headers = &.{ .{ .name = "content-type", .value = "image/jpeg" }, .{ .name = "access-control-allow-origin", .value = "*" } } },
     });
     var chunk: [64 * 1024]u8 = @splat(0x63);
     @memcpy(chunk[0..3], "\xff\xd8\xff");

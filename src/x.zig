@@ -829,7 +829,7 @@ const SelectedTransfer = struct {
     height_ceiling: ?u32 = null,
 };
 
-fn transferForSelection(item: job_mod.XPlanItem, selection: job_mod.Selection) !SelectedTransfer {
+pub fn transferForSelection(item: job_mod.XPlanItem, selection: job_mod.Selection) !SelectedTransfer {
     return switch (item.kind) {
         .photo => {
             if (selection.kind != .image and selection.kind != .all) return error.InvalidSelection;

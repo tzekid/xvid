@@ -69,6 +69,7 @@ pub fn dispatch(app: *App, request: *std.http.Server.Request, client: ClientCont
         if (request.head.method == .GET and std.mem.eql(u8, route.action, "events")) return jobEvents(app, request, route.id);
         if ((request.head.method == .GET or request.head.method == .HEAD) and std.mem.startsWith(u8, route.action, "artifact/")) return artifact(app, arena, request, route.id, route.action["artifact/".len..]);
         if ((request.head.method == .GET or request.head.method == .HEAD) and std.mem.startsWith(u8, route.action, "thumbnail/")) return instagramThumbnail(app, arena, request, route.id, route.action["thumbnail/".len..]);
+        if (request.head.method == .POST and std.mem.eql(u8, route.action, "refresh")) return refreshDirect(app, arena, request, client, route.id);
         if (request.head.method == .POST and std.mem.eql(u8, route.action, "start")) return startJob(app, arena, request, route.id);
         if (request.head.method == .POST and std.mem.eql(u8, route.action, "cancel")) return cancelJob(app, request, route.id);
         if (request.head.method == .POST and std.mem.eql(u8, route.action, "delete")) return deleteJob(app, request, route.id);
@@ -297,7 +298,44 @@ fn rangeProblem(request: *std.http.Server.Request, size: u64) !void {
     try request.respond("range not satisfiable\n", .{ .status = .range_not_satisfiable, .extra_headers = &headers });
 }
 
+fn refreshDirect(app: *App, arena: std.mem.Allocator, request: *std.http.Server.Request, client: ClientContext, id: []const u8) !void {
+    const rate_key = clientRateKey(request, client);
+    const form = parseRequestForm(arena, request) catch return problem(request, .bad_request, "Invalid request", "Try the post again.");
+    const item_id = form.item_id orelse return problem(request, .bad_request, "Missing item", "Choose the original again.");
+    const snapshot = (try app.registry.snapshot(arena, id)) orelse return problem(request, .not_found, "Link expired", "Download the post again.");
+    if (!snapshot.data.direct_delivery or snapshot.data.state != .ready) return problem(request, .conflict, "Unavailable", "Download the post again.");
+    const original = snapshot.data.probe.?;
+    const old_item = for (original.x_plan.?.items) |item| {
+        if (std.mem.eql(u8, item.id, item_id)) break item;
+    } else return problem(request, .not_found, "Item unavailable", "Download the post again.");
+    if (app.rate_limiter.allow(rate_key, now(app.io)) != .allowed) return problem(request, .too_many_requests, "Wait a moment", "Try the download again shortly.");
+    var context = source.Context.init(arena, app.io, &app.config, &app.child_environment, &app.source_shared);
+    defer context.deinit();
+    var cancel: std.atomic.Value(bool) = .init(false);
+    const fresh = source.probe(arena, &context, id, snapshot.data.source_url, &cancel) catch return problem(request, .bad_gateway, "Could not refresh", "Try the post again.");
+    const new_item = for (fresh.x_plan.?.items) |item| {
+        if (std.mem.eql(u8, item.id, old_item.id) and item.kind == old_item.kind) break item;
+    } else return problem(request, .conflict, "The post changed", "Choose the media again.");
+    const selection = snapshot.data.selection.?;
+    const old_transfer = try x.transferForSelection(old_item, selection);
+    const new_transfer = x.transferForSelection(new_item, selection) catch return problem(request, .conflict, "Quality unavailable", "Choose the resolution again.");
+    if (old_item.kind != .photo) {
+        const old_variant = for (old_item.video_variants) |variant| {
+            if (std.mem.eql(u8, variant.url, old_transfer.url)) break variant;
+        } else return error.InvalidProbe;
+        const new_variant = for (new_item.video_variants) |variant| {
+            if (std.mem.eql(u8, variant.url, new_transfer.url)) break variant;
+        } else return error.InvalidProbe;
+        if (old_variant.width != new_variant.width or old_variant.height != new_variant.height) return problem(request, .conflict, "Quality changed", "Choose the resolution again.");
+    }
+    const current = app.registry.findLocked(id) orelse return problem(request, .not_found, "Link expired", "Download the post again.");
+    current.unlock();
+    const body = try std.json.Stringify.valueAlloc(arena, .{ .url = new_transfer.url }, .{});
+    return respondStatic(request, .ok, "application/json; charset=utf-8", body, "private, no-store");
+}
+
 fn startJob(app: *App, arena: std.mem.Allocator, request: *std.http.Server.Request, id: []const u8) !void {
+    defer app.syncUsage(id);
     const form = parseRequestForm(arena, request) catch return problem(request, .bad_request, "Invalid choice", "Choose available media and one file treatment.");
     const locked = app.registry.findLocked(id) orelse return redirect(request, "/");
     defer locked.unlock();
@@ -358,7 +396,7 @@ fn startJob(app: *App, arena: std.mem.Allocator, request: *std.http.Server.Reque
 
     const mode = if (form.delivery) |value| std.meta.stringToEnum(job_mod.DeliveryMode, value) orelse return problem(request, .unprocessable_entity, "Invalid file preparation", "Choose Keep source file, Compatible MP4, or Smaller MP4.") else job_mod.DeliveryMode.original;
     if ((kind == .image or kind == .all or probe.item_count > 1) and mode != .original) return problem(request, .unprocessable_entity, "These files stay original", "Multi-item and photo jobs are delivered as source files.");
-    if (!(app.canStartMedia(probe.item_count, mode) catch false)) return problem(request, .service_unavailable, "Not enough bounded storage", "This job cannot start without crossing the configured storage budget or free-space floor.");
+    if (mode != .original and !(app.canStartMedia(probe.item_count, mode) catch false)) return problem(request, .service_unavailable, "Not enough bounded storage", "This job cannot start without crossing the configured storage budget or free-space floor.");
 
     const target_height = if (mode == .downscale) blk: {
         const raw = form.target_height orelse return problem(request, .unprocessable_entity, "Choose a target resolution", "Smaller MP4 requires a lower output resolution.");
@@ -375,12 +413,13 @@ fn startJob(app: *App, arena: std.mem.Allocator, request: *std.http.Server.Reque
         .label = try allocator.dupe(u8, selected_label),
     };
     job.data.delivery = .{ .mode = mode, .target_height = target_height };
-    try job.transition(.queued, now(app.io), app.config.terminal_ttl_seconds);
-    job.progress = .{ .phase = .queued, .label = "Waiting to start", .updated_at = now(app.io) };
+    job.data.direct_delivery = mode == .original;
+    try job.transition(if (job.data.direct_delivery) .ready else .queued, now(app.io), app.config.terminal_ttl_seconds);
+    job.progress = .{ .phase = if (job.data.direct_delivery) .ready else .queued, .label = if (job.data.direct_delivery) "Ready to download" else "Waiting to start", .updated_at = now(app.io) };
     try app.registry.persistLocked(job);
-    if (!try app.enqueueMedia(id)) std.log.warn("media_queue_full job_id={s} state=queued recovery=scheduled", .{id});
-    std.log.info("job_started job_id={s} source_host={s} state=queued delivery={s} items={d}", .{ id, probe.source_host, @tagName(mode), probe.item_count });
-    return redirectJob(request, id);
+    if (!job.data.direct_delivery and !try app.enqueueMedia(id)) std.log.warn("media_queue_full job_id={s} state=queued recovery=scheduled", .{id});
+    std.log.info("job_started job_id={s} source_host={s} state={s} delivery={s} items={d}", .{ id, probe.source_host, @tagName(job.data.state), @tagName(mode), probe.item_count });
+    return redirectCreatedJob(request, id, job.data.direct_delivery);
 }
 
 fn cancelJob(app: *App, request: *std.http.Server.Request, id: []const u8) !void {
@@ -689,7 +728,7 @@ fn responseHeaders(content_type: []const u8, cache_control: []const u8) [7]std.h
         .{ .name = "referrer-policy", .value = "same-origin" },
         .{ .name = "x-frame-options", .value = "DENY" },
         .{ .name = "permissions-policy", .value = "camera=(), microphone=(), geolocation=(), clipboard-read=(self), clipboard-write=(self)" },
-        .{ .name = "content-security-policy", .value = "default-src 'self'; base-uri 'none'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data:; object-src 'none'; script-src 'self'; style-src 'self'; manifest-src 'self'" },
+        .{ .name = "content-security-policy", .value = "default-src 'self'; base-uri 'none'; connect-src 'self' https://video.twimg.com https://pbs.twimg.com; media-src 'self' blob:; form-action 'self'; frame-ancestors 'none'; img-src 'self' data: blob:; object-src 'none'; script-src 'self'; style-src 'self'; manifest-src 'self'" },
     };
 }
 

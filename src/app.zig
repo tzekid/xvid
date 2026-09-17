@@ -313,7 +313,7 @@ pub const App = struct {
         const item_choice = probe_result.engine == .instagram_native and probe_result.item_count > 1;
         const resolution_choice = probe_result.engine == .x_native and probe_result.variants.len > 1;
         if (!item_choice and (snapshot.data.intent == .save_original or !resolution_choice)) {
-            if (!(app.canStartMedia(probe_result.item_count, .original) catch false)) {
+            if (probe_result.engine != .x_native and !(app.canStartMedia(probe_result.item_count, .original) catch false)) {
                 _ = try app.registry.fail(id, "STORAGE_UNAVAILABLE", "This job cannot start without crossing the configured storage limit.", std.Io.Clock.real.now(app.io).toSeconds(), app.config.terminal_ttl_seconds);
                 app.syncUsage(id);
                 std.log.warn("probe_failed job_id={s} error_code=STORAGE_UNAVAILABLE cause=bounded_storage", .{id});
@@ -326,7 +326,7 @@ pub const App = struct {
                 std.log.warn("probe_failed job_id={s} error_code={s} cause={s}", .{ id, failure.code, @errorName(err) });
                 return;
             };
-            automatic_start = .{ .selection = selection, .delivery = .{ .mode = .original } };
+            automatic_start = .{ .selection = selection, .delivery = .{ .mode = .original }, .direct_ttl = if (probe_result.engine == .x_native) app.config.terminal_ttl_seconds else null };
         }
         const completed = app.registry.completeProbe(id, probe_result, automatic_start, std.Io.Clock.real.now(app.io).toSeconds()) catch |err| {
             const failure = probeFailure(err);
@@ -337,7 +337,7 @@ pub const App = struct {
         };
         if (!completed) return;
         app.syncUsage(id);
-        if (automatic_start != null and !try app.enqueueMedia(id)) {
+        if (automatic_start != null and automatic_start.?.direct_ttl == null and !try app.enqueueMedia(id)) {
             std.log.warn("media_queue_full job_id={s} state=queued recovery=scheduled", .{id});
         }
         std.log.info("probe_complete job_id={s} source_host={s} source_engine={s} items={d} duration_ms={d}", .{ id, probe_result.source_host, @tagName(probe_result.engine), probe_result.item_count, started.untilNow(app.io).raw.toMilliseconds() });

@@ -4,6 +4,7 @@ const job_mod = @import("job.zig");
 pub const AutomaticStart = struct {
     selection: job_mod.Selection,
     delivery: job_mod.Delivery,
+    direct_ttl: ?i64 = null,
 };
 
 pub const LockedJob = struct {
@@ -173,8 +174,9 @@ pub const Registry = struct {
         if (automatic_start) |start| {
             job.data.selection = try job_mod.cloneSelection(job.arena.allocator(), start.selection);
             job.data.delivery = start.delivery;
-            try job.transition(.queued, now, 0);
-            job.progress = .{ .phase = .queued, .label = "Queued", .updated_at = now };
+            job.data.direct_delivery = start.direct_ttl != null;
+            try job.transition(if (job.data.direct_delivery) .ready else .queued, now, start.direct_ttl orelse 0);
+            job.progress = .{ .phase = if (job.data.direct_delivery) .ready else .queued, .label = if (job.data.direct_delivery) "Ready to download" else "Queued", .updated_at = now };
         } else {
             try job.transition(.awaiting_choice, now, 0);
             job.progress = .{ .phase = .probing, .label = "Ready for your choice", .updated_at = now };

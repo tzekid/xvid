@@ -88,6 +88,15 @@ release must be rolled back, restore `xvid.previous` together with the matching
 configuration when the schema changed, restart the service, and verify local
 and public readiness.
 
+New manifests include `direct_delivery`. Upgrading reads existing manifests normally.
+A rollback to a release predating that field quarantines manifests written by this
+release because the old parser rejects unknown fields. Those temporary result
+pages must be recreated; the normalized SQLite usage ledger is unaffected.
+
+X direct jobs reach `ready` after metadata resolution. Their media directories and
+`retained_bytes` remain empty/zero, and there is no server download-complete event.
+Browser save/share handoff is not proof that a user saved a file to Photos or disk.
+
 ## X changes
 
 X's metadata interface is undocumented. The weekly upstream workflow compares

@@ -3,11 +3,12 @@
 xvid is a small, mobile-first utility for saving photos and videos from public
 X/Twitter status links and public Instagram posts/Reels.
 
-Production is one Zig executable behind Caddy. It resolves X and Instagram metadata natively,
-downloads from reviewed X and Instagram media hosts, validates videos with FFprobe, and
-delivers the selected original rendition without additional encoding. The existing
-explicit conversion API remains available for older clients. Jobs are
-temporary filesystem directories; normalized usage records live in SQLite.
+Production is one Zig executable behind Caddy. For X originals, it resolves metadata
+and returns the selected media links. The browser fetches the files directly from
+X's reviewed CDN hosts, without sending video bytes through the VPS or staging
+media on its disk. Instagram retains its existing server download path.
+The explicit conversion API remains available for older clients. Jobs are temporary
+filesystem directories; normalized usage records live in SQLite.
 
 ## User journeys
 
@@ -27,17 +28,24 @@ The server renders normal HTML forms. JavaScript adds live updates, clipboard
 handling, automatic desktop downloads, and the bounded iOS share action. The
 form journey still works without JavaScript.
 
+For X originals, JavaScript downloads with credentials omitted and no referrer.
+It checks the media signature and transfer length, supports cancellation, and
+refreshes an expired link once for the same item and resolution. There is no
+silent server proxy. Browsers with a file picker can stream a manually requested
+video to disk (up to 4 GiB). Other downloads and native file sharing use a bounded
+64 MiB buffer; larger files can be opened directly with **Open original**.
+Multi-photo posts offer individual files and, where supported, a bounded photo
+share group. X originals no longer create server ZIP archives. Temporary result
+pages expire independently of any CDN URL expiration.
+
 ## Runtime
 
 ```text
-browser
-  -> Caddy
-  -> xvid
-       -> X GraphQL, with syndication fallback
-       -> reviewed X / Instagram media hosts
-       -> FFprobe
-       -> optional FFmpeg
-       -> temporary job files + usage.sqlite3
+browser -> Caddy -> xvid -> X metadata
+browser ----------------> X media CDN (original files)
+
+Instagram and legacy conversions:
+browser -> Caddy -> xvid -> media CDN -> FFprobe / optional FFmpeg
 ```
 
 There is no generic extractor, Python service, Deno runtime, frontend framework,
@@ -75,7 +83,8 @@ zig build e2e -Doptimize=ReleaseSafe
 ```
 
 This also exercises the disposable server with JavaScript and native forms,
-resolution selection, repeat downloads, clipboard replacements/failures, edited
+direct cross-origin downloads, expired-link refresh, cancellation, chunked responses,
+size limits, file streaming, resolution selection, clipboard replacements/failures, edited
 links, reload/history, and phone/desktop layouts. Clipboard permission responses
 are simulated; actual iPhone paste prompts and sharing require a device check.
 

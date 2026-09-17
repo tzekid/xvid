@@ -131,6 +131,7 @@ pub const Data = struct {
     probe: ?Probe = null,
     selection: ?Selection = null,
     delivery: ?Delivery = null,
+    direct_delivery: bool = false,
     source_artifacts: []const Artifact = &.{},
     output_artifacts: []const Artifact = &.{},
     failure: ?Failure = null,
@@ -239,7 +240,8 @@ pub const Job = struct {
     }
 
     pub fn transition(job: *Job, next: State, now: i64, terminal_ttl_seconds: i64) !void {
-        if (!transitionAllowed(job.data.state, next)) return error.InvalidStateTransition;
+        const direct_ready = job.data.direct_delivery and next == .ready and (job.data.state == .probing or job.data.state == .awaiting_choice);
+        if (!direct_ready and !transitionAllowed(job.data.state, next)) return error.InvalidStateTransition;
         job.data.state = next;
         job.data.updated_at = now;
         job.data.expires_at = if (next.terminal()) now + terminal_ttl_seconds else null;
@@ -308,7 +310,8 @@ pub fn validateData(data: Data, directory_id: []const u8) !void {
     if ((data.state == .probing or data.state == .awaiting_choice) and data.selection != null) return error.InvalidSelection;
     if ((data.state == .queued or data.state == .acquiring or data.state == .preparing or data.state == .ready) and data.selection == null) return error.InvalidSelection;
     if (data.source_artifacts.len > max_media_items or data.output_artifacts.len > max_media_items + 1) return error.TooManyArtifacts;
-    if (data.state == .ready and data.source_artifacts.len == 0 and data.output_artifacts.len == 0) return error.MissingReadyArtifact;
+    if (data.direct_delivery and (data.state != .ready or data.probe == null or data.probe.?.engine != .x_native or data.delivery == null or data.delivery.?.mode != .original or data.source_artifacts.len != 0 or data.output_artifacts.len != 0)) return error.InvalidDelivery;
+    if (data.state == .ready and !data.direct_delivery and data.source_artifacts.len == 0 and data.output_artifacts.len == 0) return error.MissingReadyArtifact;
     for (data.source_artifacts) |artifact| try validateArtifact(artifact);
     for (data.output_artifacts) |artifact| try validateArtifact(artifact);
     if (data.state.terminal() != (data.expires_at != null)) return error.InvalidExpiry;
@@ -455,6 +458,7 @@ fn cloneData(allocator: std.mem.Allocator, data: Data) !Data {
         .probe = if (data.probe) |value| try cloneProbe(allocator, value) else null,
         .selection = if (data.selection) |value| try cloneSelection(allocator, value) else null,
         .delivery = data.delivery,
+        .direct_delivery = data.direct_delivery,
         .source_artifacts = try cloneArtifacts(allocator, data.source_artifacts),
         .output_artifacts = try cloneArtifacts(allocator, data.output_artifacts),
         .failure = if (data.failure) |value| .{

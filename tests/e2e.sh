@@ -241,6 +241,19 @@ assert (page.forms, page.inputs, page.buttons) == (1, 1, 1)
 PYCOMPOSER
 }
 
+direct_url() {
+  python3 - "$1" <<'PYURL'
+from html.parser import HTMLParser
+import sys
+class Page(HTMLParser):
+    urls=[]
+    def handle_starttag(self,tag,attrs):
+        attrs=dict(attrs)
+        if 'data-direct-file' in attrs: self.urls.append(attrs['data-url'])
+p=Page();p.feed(open(sys.argv[1]).read());assert p.urls;print(p.urls[0])
+PYURL
+}
+
 stage 'start fixture and application'
 start_fixture
 start_server
@@ -291,62 +304,37 @@ assert_status 422 -X POST \
 
 assert_composer "$xvid_temp/status-body.html"
 
-stage 'Basic native Original journey'
+stage 'Basic metadata-only Original journey'
+media_before=$(http -fsS "$x_origin/stats")
 basic_location=$(create_job 'https://x.com/fixture/status/2103' 0 "$xvid_temp/basic.headers")
 [[ "$basic_location" == *'?auto=1' ]]
 basic_path=$(job_path_from_location "$basic_location")
 basic_id=$(job_id_from_location "$basic_location")
 basic_manifest="$xvid_temp/data/jobs/$basic_id/job.json"
 wait_for_state "$basic_manifest" ready
-rg -q '"intent": "save_original"' "$basic_manifest"
-rg -q '"engine": "x_native"' "$basic_manifest"
-rg -q '"mode": "original"' "$basic_manifest"
-rg -q '"path": "preview/item-001.png"' "$basic_manifest"
+rg -q '"direct_delivery": true' "$basic_manifest"
+[[ "$(http -fsS "$x_origin/stats")" == "$media_before" ]]
+[[ -z "$(find "$xvid_temp/data/jobs/$basic_id/source" "$xvid_temp/data/jobs/$basic_id/output" -type f -print -quit)" ]]
 [[ ! -e "$xvid_temp/data/jobs/$basic_id/.fixture-ffmpeg-invoked" ]]
-[[ "$(find "$xvid_temp/data/jobs/$basic_id/preview" -type f | wc -l)" == 1 ]]
-
 http -fsS "$xvid_origin$basic_location" > "$xvid_temp/basic.html"
 assert_composer "$xvid_temp/basic.html"
-rg -q 'value="https://x.com/fixture/status/2103"' "$xvid_temp/basic.html"
-rg -q 'data-auto-download' "$xvid_temp/basic.html"
-rg -Fq "poster=\"$basic_path/artifact/file-1?poster=1\"" "$xvid_temp/basic.html"
-if rg -q 'data-events=' "$xvid_temp/basic.html"; then
-  printf 'ready page unexpectedly retained an event stream\n' >&2
-  false
-fi
-assert_absent -q "$x_origin" "$xvid_temp/basic.html"
-
-http -fsS -D "$xvid_temp/basic-poster.headers" "$xvid_origin$basic_path/artifact/file-1?poster=1" > "$xvid_temp/basic-poster.png"
-rg -qi '^content-type: image/png' "$xvid_temp/basic-poster.headers"
-assert_absent -qi '^content-disposition:' "$xvid_temp/basic-poster.headers"
-rg -a -q 'PNG' "$xvid_temp/basic-poster.png"
-[[ "$(sqlite3 "$usage_db" "SELECT count(*) FROM usage_deliveries WHERE job_id='$basic_id'")" == 0 ]]
-
-http -fsSI "$xvid_origin$basic_path/artifact/file-1" > "$xvid_temp/basic-head.txt"
-rg -qi '^accept-ranges: bytes' "$xvid_temp/basic-head.txt"
-http -fsS -H 'Range: bytes=0-7' -D "$xvid_temp/basic-range.headers" "$xvid_origin$basic_path/artifact/file-1" > "$xvid_temp/basic-range.bin"
-rg -q '206' "$xvid_temp/basic-range.headers"
-[[ "$(wc -c < "$xvid_temp/basic-range.bin")" == 8 ]]
-http -fsS "$xvid_origin$basic_path/artifact/file-1?download=1" > "$xvid_temp/basic.mp4"
-rg -a -q 'ftyp' "$xvid_temp/basic.mp4"
-[[ "$(sqlite3 "$usage_db" "SELECT count(*) FROM usage_deliveries WHERE job_id='$basic_id' AND kind='download_response_complete'")" == 1 ]]
+rg -q 'data-direct-delivery' "$xvid_temp/basic.html"
+rg -q 'data-direct-download' "$xvid_temp/basic.html"
+rg -q 'referrerpolicy="no-referrer"' "$xvid_temp/basic.html"
+assert_status 404 "$xvid_origin$basic_path/artifact/file-1"
+# Simulate the client, independently of the Xvid server.
+direct_url=$(direct_url "$xvid_temp/basic.html")
+http -fsS "$direct_url" > "$xvid_temp/basic.mp4"
+rg -a -q 'height=1080' "$xvid_temp/basic.mp4"
+[[ "$(sqlite3 "$usage_db" "SELECT retained_bytes FROM usage_jobs WHERE job_id='$basic_id'")" == 0 ]]
+cp "$project_root/assets/icon-180.png" "$xvid_temp/basic-poster.png"
+# Refresh returns only a URL for the same item; it never downloads media.
+media_before=$(http -fsS "$x_origin/stats")
+http -fsS -X POST -d 'item_id=video-a' "$xvid_origin$basic_path/refresh" > "$xvid_temp/refresh.json"
+[[ "$(http -fsS "$x_origin/stats")" == "$media_before" ]]
+assert_status 404 -X POST -d 'item_id=not-in-this-post' "$xvid_origin$basic_path/refresh"
 delete_job "$basic_path"
 wait_for_absence "$xvid_temp/data/jobs/$basic_id"
-
-stage 'invalid optional poster keeps the video usable'
-posterless_location=$(create_job 'https://x.com/fixture/status/2140' 0 "$xvid_temp/posterless.headers")
-posterless_path=$(job_path_from_location "$posterless_location")
-posterless_id=$(job_id_from_location "$posterless_location")
-posterless_manifest="$xvid_temp/data/jobs/$posterless_id/job.json"
-wait_for_state "$posterless_manifest" ready
-rg -q '"poster": null' "$posterless_manifest"
-[[ -z "$(find "$xvid_temp/data/jobs/$posterless_id/preview" -type f -print -quit)" ]]
-http -fsS "$xvid_origin$posterless_path" > "$xvid_temp/posterless.html"
-assert_absent -q '<video[^>]+ poster=' "$xvid_temp/posterless.html"
-http -fsS "$xvid_origin$posterless_path/artifact/file-1" > "$xvid_temp/posterless.mp4"
-rg -a -q 'ftyp' "$xvid_temp/posterless.mp4"
-delete_job "$posterless_path"
-wait_for_absence "$xvid_temp/data/jobs/$posterless_id"
 
 stage 'Advanced lower source quality journey'
 advanced_location=$(create_job 'https://x.com/fixture/status/2103' 1 "$xvid_temp/advanced.headers")
@@ -368,7 +356,11 @@ rg -q 'type="submit" name="variant" value="video-720"' "$xvid_temp/advanced.html
 post_job_action "$advanced_path" start 'kind=video&variant=video-720&delivery=original'
 wait_for_state "$advanced_manifest" ready
 rg -q '"variant_id": "video-720"' "$advanced_manifest"
-rg -a -q 'height=720' "$xvid_temp/data/jobs/$advanced_id/source/item-001.mp4"
+[[ "$(sqlite3 "$usage_db" "SELECT state || ':' || retained_bytes FROM usage_jobs WHERE job_id='$advanced_id'")" == ready:0 ]]
+http -fsS "$xvid_origin$advanced_path" > "$xvid_temp/selected.html"
+http -fsS "$(direct_url "$xvid_temp/selected.html")" > "$xvid_temp/selected.mp4"
+rg -a -q 'height=720' "$xvid_temp/selected.mp4"
+[[ -z "$(find "$xvid_temp/data/jobs/$advanced_id/source" -type f -print -quit)" ]]
 [[ ! -e "$xvid_temp/data/jobs/$advanced_id/.fixture-ffmpeg-invoked" ]]
 delete_job "$advanced_path"
 wait_for_absence "$xvid_temp/data/jobs/$advanced_id"
@@ -406,19 +398,17 @@ rg -a -q 'fixture-output height=720' "$xvid_temp/data/jobs/$downscale_id/output/
 delete_job "$downscale_path"
 wait_for_absence "$xvid_temp/data/jobs/$downscale_id"
 
-stage 'multi-photo ZIP journey'
+stage 'multi-photo metadata-only journey'
 photos_location=$(create_job 'https://x.com/fixture/status/2102' 0 "$xvid_temp/photos.headers")
 photos_path=$(job_path_from_location "$photos_location")
 photos_id=$(job_id_from_location "$photos_location")
 photos_manifest="$xvid_temp/data/jobs/$photos_id/job.json"
 wait_for_state "$photos_manifest" ready
-[[ "$(find "$xvid_temp/data/jobs/$photos_id/source" -type f | wc -l)" == 4 ]]
-http -fsS "$xvid_origin$photos_path/artifact/bundle?download=1" > "$xvid_temp/photos.zip"
-unzip -t "$xvid_temp/photos.zip" >/dev/null
+[[ -z "$(find "$xvid_temp/data/jobs/$photos_id/source" -type f -print -quit)" ]]
 http -fsS "$xvid_origin$photos_path" > "$xvid_temp/photos.html"
 assert_composer "$xvid_temp/photos.html"
-rg -Fq "$photos_path/artifact/bundle?download=1" "$xvid_temp/photos.html"
-rg -q 'data-share-photos hidden' "$xvid_temp/photos.html"
+[[ "$(python3 -c 'import sys; print(open(sys.argv[1]).read().count("data-direct-file"))' "$xvid_temp/photos.html")" == 4 ]]
+assert_status 404 "$xvid_origin$photos_path/artifact/bundle"
 delete_job "$photos_path"
 wait_for_absence "$xvid_temp/data/jobs/$photos_id"
 
@@ -490,16 +480,17 @@ rg -q '"state": "cancelled"' "$cancel_manifest"
 delete_job "$cancel_path"
 wait_for_absence "$xvid_temp/data/jobs/$cancel_id"
 
-stage 'crash recovery during native acquisition'
+stage 'metadata-only result survives restart'
 recovery_location=$(create_job 'https://x.com/fixture/status/2130' 0 "$xvid_temp/recovery.headers")
 recovery_path=$(job_path_from_location "$recovery_location")
 recovery_id=$(job_id_from_location "$recovery_location")
 recovery_manifest="$xvid_temp/data/jobs/$recovery_id/job.json"
-wait_for_state "$recovery_manifest" acquiring
+wait_for_state "$recovery_manifest" ready
 stop_server KILL
 start_server
-wait_for_state "$recovery_manifest" ready 1200
-[[ -f "$xvid_temp/data/jobs/$recovery_id/source/item-001.jpg" ]]
+http -fsS "$xvid_origin$recovery_path" > "$xvid_temp/recovered.html"
+rg -q 'data-direct-delivery' "$xvid_temp/recovered.html"
+[[ -z "$(find "$xvid_temp/data/jobs/$recovery_id/source" -type f -print -quit)" ]]
 delete_job "$recovery_path"
 wait_for_absence "$xvid_temp/data/jobs/$recovery_id"
 
@@ -542,7 +533,8 @@ for fixture in 2101 2102 2104 2105 2129; do
 import json, sys
 job = json.load(open(sys.argv[1]))
 expected = {'2101': 1, '2102': 4, '2104': 2, '2105': 3, '2129': 1}[sys.argv[2]]
-assert len(job['source_artifacts']) == expected
+assert len(job['probe']['x_plan']['items']) == expected
+assert job['direct_delivery'] and not job['source_artifacts']
 assert job['selection'] is not None
 PYSKIP
   delete_job "$path"
@@ -611,7 +603,8 @@ http -fsS "$xvid_origin$original_path" > "$xvid_temp/real-choices.html"
 rg -q 'name="variant" value="video-120"' "$xvid_temp/real-choices.html"
 post_job_action "$original_path" start 'kind=video&variant=best&delivery=original'
 wait_for_state "$original_manifest" ready
-http -fsS "$xvid_origin$original_path/artifact/file-1?download=1" > "$xvid_temp/original.mp4"
+http -fsS "$xvid_origin$original_path" > "$xvid_temp/original.html"
+http -fsS "$(direct_url "$xvid_temp/original.html")" > "$xvid_temp/original.mp4"
 cmp "$input_video" "$xvid_temp/original.mp4"
 rg -q '"mode": "original"' "$original_manifest"
 [[ -z "$(find "$xvid_temp/real-data/jobs/$original_id/output" -type f -print -quit)" ]]
