@@ -106,3 +106,10 @@ These commands help inspect a hosted installation:
 
 `inspect` leaves out submitted links and provider media URLs. Keep those URLs,
 tokens, cookies, and provider response bodies out of logs and commits.
+
+The same E2E target also fills the HTTP pool with incomplete/trickled requests,
+checks TERM with SSE, blocked metadata and an encoder descendant, and restarts
+the same disposable data to verify recovery. Installer scenarios use temporary
+files and explicit command failures to prove restart, readiness, hash and later
+controller-update rollback plus deployment-lock serialization. They never
+operate on the real service or data directory.

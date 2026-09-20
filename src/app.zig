@@ -25,9 +25,7 @@ pub const App = struct {
     child_environment: std.process.Environ.Map,
     source_shared: source.Shared = .{},
     probe_queue: Queue,
-    probe_threads: []?std.Thread,
     media_queue: Queue,
-    media_threads: []?std.Thread,
     stop_background: std.atomic.Value(bool) = .init(false),
     open_sse: std.atomic.Value(u8) = .init(0),
     open_artifacts: std.atomic.Value(u8) = .init(0),
@@ -64,12 +62,6 @@ pub const App = struct {
         errdefer probe_queue.deinit();
         var media_queue = try Queue.init(allocator, config.max_queued_media);
         errdefer media_queue.deinit();
-        const probe_threads = try allocator.alloc(?std.Thread, config.probe_workers);
-        errdefer allocator.free(probe_threads);
-        @memset(probe_threads, null);
-        const media_threads = try allocator.alloc(?std.Thread, config.media_workers);
-        errdefer allocator.free(media_threads);
-        @memset(media_threads, null);
         var child_environment = std.process.Environ.Map.init(allocator);
         errdefer child_environment.deinit();
         try child_environment.put("PATH", "/usr/local/bin:/usr/bin:/bin");
@@ -87,18 +79,14 @@ pub const App = struct {
             .claims = claims,
             .child_environment = child_environment,
             .probe_queue = probe_queue,
-            .probe_threads = probe_threads,
             .media_queue = media_queue,
-            .media_threads = media_threads,
         };
         try app.backfillUsage();
         return app;
     }
 
     pub fn deinit(app: *App) void {
-        app.allocator.free(app.media_threads);
         app.media_queue.deinit();
-        app.allocator.free(app.probe_threads);
         app.probe_queue.deinit();
         app.child_environment.deinit();
         app.claims.deinit();
@@ -178,41 +166,25 @@ pub const App = struct {
         }
     }
 
+    pub fn beginShutdown(app: *App) void {
+        app.stop_background.store(true, .release);
+        app.registry.interruptWork();
+    }
+
     pub fn serve(app: *App) !void {
         app.stop_background.store(false, .release);
         try app.enqueueRecoveryProbes();
         try app.enqueueRecoveryMedia();
-        var started: usize = 0;
-        errdefer {
-            app.stop_background.store(true, .release);
-            for (app.probe_threads[0..started]) |thread| if (thread) |item| item.join();
-        }
-        for (app.probe_threads) |*slot| {
-            slot.* = try std.Thread.spawn(.{}, probeMain, .{app});
-            started += 1;
-        }
-        var media_started: usize = 0;
-        errdefer {
-            app.stop_background.store(true, .release);
-            for (app.media_threads[0..media_started]) |thread| if (thread) |item| item.join();
-        }
-        for (app.media_threads) |*slot| {
-            slot.* = try std.Thread.spawn(.{}, mediaMain, .{app});
-            media_started += 1;
-        }
-        const cleanup = try std.Thread.spawn(.{}, cleanupMain, .{app});
+        var background: std.Io.Group = .init;
         defer {
-            app.stop_background.store(true, .release);
-            cleanup.join();
-            for (app.probe_threads) |*slot| {
-                if (slot.*) |thread| thread.join();
-                slot.* = null;
-            }
-            for (app.media_threads) |*slot| {
-                if (slot.*) |thread| thread.join();
-                slot.* = null;
-            }
+            app.beginShutdown();
+            // Also interrupt DNS/TLS/socket I/O, which cannot observe job flags
+            // while blocked. All borrowed app state outlives this cancel/join.
+            background.cancel(app.io);
         }
+        for (0..app.config.probe_workers) |_| try background.concurrent(app.io, probeMain, .{app});
+        for (0..app.config.media_workers) |_| try background.concurrent(app.io, mediaMain, .{app});
+        try background.concurrent(app.io, cleanupMain, .{app});
         try server.serve(app);
     }
 
@@ -285,11 +257,13 @@ pub const App = struct {
                 sleepMilliseconds(10);
                 continue;
             };
+            if (app.stop_background.load(.acquire)) break;
             app.runProbe(&source_context, &id) catch |err| std.log.warn("probe worker failed job_id={s} error={s}", .{ &id, @errorName(err) });
         }
     }
 
     fn runProbe(app: *App, source_context: *source.Context, id: []const u8) !void {
+        if (app.stop_background.load(.acquire)) return;
         if (!try app.claims.claim(.probe, id)) return;
         defer app.claims.release(.probe, id);
         const retained = app.registry.retain(id) orelse return;
@@ -301,7 +275,7 @@ pub const App = struct {
         const snapshot = (try app.registry.snapshot(arena, id)) orelse return;
         if (snapshot.data.state != .probing) return;
         const probe_result = source.probe(arena, source_context, id, snapshot.data.source_url, &retained.cancel_requested) catch |err| {
-            if (err == error.Cancelled) return;
+            if (err == error.Cancelled or retained.cancel_requested.load(.acquire) or app.stop_background.load(.acquire)) return;
             const failure = probeFailure(err);
             _ = try app.registry.fail(id, failure.code, failure.message, std.Io.Clock.real.now(app.io).toSeconds(), app.config.terminal_ttl_seconds);
             app.syncUsage(id);
@@ -351,11 +325,13 @@ pub const App = struct {
                 sleepMilliseconds(10);
                 continue;
             };
+            if (app.stop_background.load(.acquire)) break;
             app.runMedia(&source_context, &id) catch |err| std.log.warn("media worker failed job_id={s} error={s}", .{ &id, @errorName(err) });
         }
     }
 
     fn runMedia(app: *App, source_context: *source.Context, id: []const u8) !void {
+        if (app.stop_background.load(.acquire)) return;
         if (!try app.claims.claim(.media, id)) return;
         defer app.claims.release(.media, id);
         const retained = app.registry.retain(id) orelse return;
@@ -372,6 +348,7 @@ pub const App = struct {
     }
 
     fn runAcquisition(app: *App, source_context: *source.Context, id: []const u8, retained: *job_mod.Job) !void {
+        if (app.stop_background.load(.acquire)) return;
         const started = std.Io.Clock.Timestamp.now(app.io, .awake);
         if (!try app.registry.beginAcquisition(id, std.Io.Clock.real.now(app.io).toSeconds())) return;
         var arena_state = std.heap.ArenaAllocator.init(app.allocator);
@@ -383,7 +360,7 @@ pub const App = struct {
         const job_root = try app.registry.jobPathAlloc(arena, id, "");
         var progress_context = MediaProgress{ .app = app, .id = id };
         const result = source.acquire(arena, arena, source_context, id, job_root, snapshot.data.source_url, probe_result, selection, &retained.cancel_requested, .{ .context = &progress_context, .update = MediaProgress.update }) catch |err| {
-            if (err == error.Cancelled) return;
+            if (err == error.Cancelled or retained.cancel_requested.load(.acquire) or app.stop_background.load(.acquire)) return;
             try app.failMedia(id, err);
             return;
         };
@@ -393,6 +370,7 @@ pub const App = struct {
     }
 
     fn runPreparation(app: *App, id: []const u8, retained: *job_mod.Job) !void {
+        if (app.stop_background.load(.acquire)) return;
         const started = std.Io.Clock.Timestamp.now(app.io, .awake);
         if (!try app.registry.beginPreparation(id, std.Io.Clock.real.now(app.io).toSeconds())) return;
         var arena_state = std.heap.ArenaAllocator.init(app.allocator);
@@ -404,7 +382,7 @@ pub const App = struct {
         var progress_context = MediaProgress{ .app = app, .id = id };
         const artifacts = ffmpeg.prepare(arena, arena, app.io, &app.config, &app.child_environment, job_root, snapshot.data.source_artifacts, delivery, &retained.cancel_requested, .{ .context = &progress_context, .update = MediaProgress.update }) catch |err| {
             app.clearJobDirectory(id, "output");
-            if (err == error.Cancelled) return;
+            if (err == error.Cancelled or retained.cancel_requested.load(.acquire) or app.stop_background.load(.acquire)) return;
             try app.fallbackPreparation(id, err);
             return;
         };

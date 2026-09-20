@@ -60,6 +60,8 @@ pub fn build(b: *std.Build) void {
     const instagram_e2e = b.addSystemCommand(&.{ "python3", "tests/instagram_e2e.py" });
     instagram_e2e.addArtifactArg(executable);
     e2e_step.dependOn(&instagram_e2e.step);
+    const installer_e2e = b.addSystemCommand(&.{ "python3", "tests/install.py" });
+    e2e_step.dependOn(&installer_e2e.step);
 }
 
 fn applicationModule(

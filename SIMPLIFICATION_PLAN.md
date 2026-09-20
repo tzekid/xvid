@@ -112,3 +112,153 @@ existing auto-deployer, then prove the installed/running executable match,
 revision record, public/local routes, retained rollback pair, and persistent
 usage state. Delivery identifiers are recorded outside this source commit to
 avoid another deployment merely to record its own hash.
+
+## Follow-up: 2026-09-20
+
+### Current facts and scope
+
+Current default and installed production are59a8481 (Verify35258319485 passed).
+The clean primary checkout remains3177549 and UX worktreeb662287; this task uses
+an isolated current-default checkout. Production PID1710925 matches installed
+SHA256d84194bc5c9eba1c79118df89ebc3132259d1a8d4538402793bdc12f67c3b043, zero restarts.
+The minute timer still deploys only successful exact-master Verify revisions.
+
+Baseline ReleaseSafe test/E2E passes10/10steps and43tests, including current
+browser direct-download behavior, Instagram, real MPEG-4/AAC input converted to
+fully decoded H.264/AAC, source retention and descendant cancellation. The
+reviewed upstream extractor blob is unchanged today. One reviewed upstream
+public sample returnedXProviderChanged; inspect safe stage/status traces and
+real provider behavior before drawing a compatibility conclusion.
+
+New independent failure evidence:
+- With10s inactivity configured, trickled headers keep all16HTTP workers busy
+  beyond11s and readiness stalls; TERM does not exit while those peers progress.
+  An entirely idle partial request does time out correctly. Preserve that
+  distinction rather than replacing a working path without evidence.
+- TERM during a fixture encode leaves the application and its owned,
+  TERM-ignoring encoder descendant running; normal explicit job cancellation
+  already works. Shutdown must use that cancellation ownership without marking
+  resumable work as a user cancellation.
+- A disposable installer fixture whose systemd restart fails exits73 with the
+  candidate binary and unit still installed. Only readiness failure currently
+  triggers rollback. No real service/data/configuration was used in the fixture.
+
+### Acceptance and narrow implementation
+
+1. Bound cumulative request-read waiting using the existing HTTP timeout and
+   monotonic nonblocking reads, so trickles cannot retain workers forever.
+   Preserve response-write inactivity semantics: large file transfers and SSE
+   must remain valid while progressing. Do not impose a total download limit,
+   new provider framework or consumer SDK adoption. Make overload reply writes
+   nonblocking. Preserve URL/origin/body limits and privacy-safe errors.
+2. Track active HTTP descriptors under the existing queue lock from dequeue
+   through final close. Stop accepting/queued work, allow a short bounded drain,
+   then shut down remaining registered sockets before joining. Make SSE observe
+   shutdown. Interrupt owned probe/media operations through existing per-job
+   cancellation flags; preserve persisted states for restart recovery. Test
+   TERM with stalled HTTP, nonterminal SSE and an actual TERM-ignoring encoder
+   descendant, then restart the same disposable data and prove recoverability.
+3. Extend the existing install/rollback transaction to every failure after
+   promotion begins, including restart and executable-identity verification.
+   Keep its lock, exact-source builds, old binary/unit pair and auto watcher.
+   Remove the redundant default-data mkdir (doctor already requires the actual
+   configured data directory). Use isolated command fixtures to prove success,
+   restart/readiness/hash/post-install failure rollback, preserved prior
+   revision/auto-controller files, and refusal of concurrent installation.
+   Do not introduce another deployment mechanism.
+4. Investigate the live canary using only redacted stage/status/shape evidence.
+   Repair a demonstrated resolver or delivery defect with generated fixtures;
+   repeat an actual application/browser canary where upstream access permits.
+   Do not log real submitted/media links, auth values or provider bodies, copy
+   real responses into fixtures, bypass access controls, or claim one fixture
+   or canary covers every live response.
+5. Run meaningful new failure regressions, existing ReleaseSafe test/E2E/build,
+   browser direct/save/share/navigation coverage, source export, formatting and
+   shell checks. Require two consecutive complete clean implementation reviews
+   after fixing findings; retain existing real conversion and process proofs.
+6. Before push, take an online SQLite backup with integrity/schema/aggregate
+   evidence and record configuration, data identity, installed/rollback hashes.
+   Push only task changes to default; verify exact Verify and let the existing
+   watcher install. Verify revision -> artifact -> PID/hash, local/public
+   routes/assets, usage integrity/schema, rollback identities and fresh logs.
+   No real-data failure injection, unrelated checkout edits, or second installer
+   races. Fix and re-review/redeploy if post-deployment evidence fails.
+
+### Follow-up plan reviews
+
+- Pass1, complete product/failure perspective found that applying a cumulative
+  budget to response writes would break legitimate large downloads. Restrict
+  the cumulative bound to request reads and preserve write inactivity. Also
+  distinguish in-memory shutdown interruption from persisted user cancellation
+  so unfinished work survives restart. The installer must restore controller
+  and revision state as well as binary/unit on later failures. Resolved these
+  in acceptance above; clean count reset.
+- Pass2, complete behavior/security/lifetime perspective: traced HTTP queue,
+  read/write semantics, SSE loop, existing process-group cancellation, registry
+  ownership and persisted recovery. Failure tests retain real descendant and
+  conversion behavior, with no body/credential logging or speculative parser
+  changes. Zero planning findings; clean1.
+- Pass3, complete operational/preservation perspective: checked exact remote,
+  current runtime, auto-deploy lock and Verify gate, installer failure boundary,
+  native backup procedure and isolated checkouts. Live-source investigation has
+  explicit evidence and external-access criteria; synthetic success cannot
+  replace it. No app pin, schema, environment or unrelated work is adopted.
+  Zero planning findings; clean2.
+
+- Pass4, final shutdown-path audit found that flags alone cannot interrupt a
+  provider blocked inside DNS/TLS/body reads, including synchronous link refresh
+  in an HTTP worker. Use the existing Zig Io.Group concurrent/cancel ownership
+  for the bounded HTTP and background worker sets, replacing their manual
+  thread arrays. Preserve the same configured worker counts and queue behavior.
+  Set job interruption flags before group cancellation, and treat canceled work
+  as interrupted rather than persisting a provider failure. Add a deliberate
+  progressing-but-incomplete metadata response to the shutdown/restart journey.
+  This is task cancellation, not a new provider abstraction. Reset clean count.
+- Pass5, complete cancellation/data review: checked std.Io.Group cancellation
+  against the pinned implementation and existing native HTTP/process call
+  boundaries. Groups own their tasks until cancellation/join completes; socket
+  shutdown remains under the descriptor registry lock. Persisted job states and
+  retained source survive cancellation and restart. Zero findings; clean1.
+- Pass6, complete operations/product review: long outgoing transfers retain
+  inactivity semantics; active provider, SSE and encoder work have explicit
+  shutdown acceptance; startup failures cancel already-started tasks before
+  freeing queues/state. Installer transaction and automatic delivery boundaries
+  remain unchanged in scope. Zero findings; clean2.
+
+### Follow-up implementation review and acceptance
+
+- Pass1, complete failure/recovery review found an actual descendant leak when
+  Io cancellation reached the encoder. `defer child.kill` ran before the older
+  `errdefer` group signal, reaped the leader and cleared its PID. Reordered both
+  process runners so group cleanup runs before reaping. Strengthened acceptance
+  to force immediate I/O cancellation separately from held-HTTP drain, checking
+  descendant absence before cleanup, persisted states, restarted probing and
+  preparation, and byte-identical retained-source recovery. Also preserved
+  cancellation as a terminal transport outcome instead of retrying it, and
+  removed preparation's cancellation-flag reset. Clean count reset to zero.
+- Pass2, complete functional/security/ownership review: traced per-request read
+  budgets, outgoing inactivity, registered-fd dequeue/close/force ordering,
+  concurrent group startup/cancellation, SSE termination, background interruption,
+  process-group cleanup and persisted recovery. Full ReleaseSafe suite passes
+  11/11steps and43tests, including held/trickled HTTP, immediate shutdown with
+  SSE/provider/encoder work, all existing browser and Instagram journeys, actual
+  MPEG-4/AAC conversion through HTTP with full decoding, and source-retention
+  failure paths. Seven installer scenarios pass: success, restart failure,
+  readiness failure, wrong running hash, late controller/timer failure, dirty
+  source rejection and lock serialization. No new URL/response/credential logs,
+  format changes, provider fallback or application dependency were introduced.
+  Zero findings; clean1.
+- Pass3, complete package/live-product/delivery review: clean source export
+  (62files,850482bytes, no generated caches) independently passes the full
+  11-step/43-test ReleaseSafe graph. Two native-video public samples resolve
+  through real GraphQL, and an actual Chromium journey with CSP/CORS enforced
+  downloads537709bytes directly from the CDN, fully decodes720pH.264/AAC and
+  removes its owned job without server media staging. Older upstream examples
+  remain unavailable/unsupported; no universal live-response claim is made.
+  The private canary verifier was corrected to accept reflected allowed CORS
+  origins and use the actual /j/<id>/delete route; application behavior was sound.
+  Verified the unchanged upstream reference, auto-deployer's exact Zig2085,
+  untouched config/schema/assets/unit/UX worktree, online SQLite integrity and
+  candidate/actual rollback doctors against isolated backup copies. Existing
+  source/revision/lock/rollback mechanisms remain authoritative. Zero findings;
+  clean2. Exact Verify and live automatic delivery are recorded externally.

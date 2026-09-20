@@ -56,6 +56,7 @@ pub fn probe(
     if (instagram.matches(source_url)) return instagram.probe(allocator, &context.instagram_client, source_url, cancel);
     if (!x.matches(source_url)) return error.UnsupportedUrl;
     const diagnostic = x.probeDiagnostic(allocator, &context.x_client, source_url) catch |native_error| {
+        if (native_error == error.Cancelled or cancelled(cancel)) return error.Cancelled;
         logMetadataFailure(job_id, native_error, &context.x_client);
         return native_error;
     };

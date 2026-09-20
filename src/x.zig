@@ -493,6 +493,7 @@ fn metadataStatusError(status: std.http.Status) anyerror {
 }
 
 fn metadataTransportError(err: anyerror) anyerror {
+    if (err == error.Canceled) return error.Cancelled;
     const name = @errorName(err);
     if (std.mem.indexOf(u8, name, "TimedOut") != null or std.mem.indexOf(u8, name, "Timeout") != null or std.mem.eql(u8, name, "WouldBlock")) return error.XMetadataTimedOut;
     return error.XMetadataTransportFailed;
@@ -1134,6 +1135,7 @@ pub fn safeFilenameBase(allocator: std.mem.Allocator, title: []const u8) ![]cons
 
 fn finalWithoutSyndication(err: anyerror) bool {
     return switch (err) {
+        error.Cancelled,
         error.InvalidUrl,
         error.InvalidXUrl,
         error.PrivateAddress,

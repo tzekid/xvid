@@ -9,6 +9,7 @@ fixture_x_server=$(realpath "$4")
 xvid_temp=$(mktemp -d)
 xvid_pid=""
 x_server_pid=""
+sse_pid=""
 current_stage="bootstrap"
 
 stage() {
@@ -17,6 +18,7 @@ stage() {
 }
 
 cleanup() {
+  if [[ -n "$sse_pid" ]]; then kill "$sse_pid" 2>/dev/null || true; wait "$sse_pid" 2>/dev/null || true; fi
   if [[ -n "$xvid_pid" ]]; then
     # All application children, including their own process groups, belong
     # to the session created by start_server. Never kill by executable name.
@@ -43,7 +45,7 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-for command in awk cmp curl ffmpeg ffprobe find pkill python3 realpath rg sed seq setsid sqlite3 timeout tr unzip wc; do
+for command in awk cmp curl ffmpeg ffprobe find pkill python3 realpath rg sed seq setsid sha256sum sqlite3 timeout tr unzip wc; do
   command -v "$command" >/dev/null || {
     printf 'E2E missing required command: %s\n' "$command" >&2
     exit 1
@@ -75,7 +77,7 @@ cat > "$xvid_config" <<JSON
   "data_dir": "$xvid_temp/data",
   "http_workers": 16,
   "http_queue": 32,
-  "http_inactivity_seconds": 30,
+  "http_inactivity_seconds": 10,
   "max_open_sse": 4,
   "max_artifact_streams": 8,
   "max_loaded_jobs": 32,
@@ -262,6 +264,14 @@ usage_db="$xvid_temp/data/usage.sqlite3"
 [[ "$(sqlite3 "$usage_db" 'PRAGMA quick_check')" == ok ]]
 [[ "$(sqlite3 "$usage_db" 'PRAGMA user_version')" == 1 ]]
 [[ "$(sqlite3 "$usage_db" "SELECT count(*) FROM pragma_table_info('usage_jobs') WHERE name IN ('source_url','title')")" == 0 ]]
+
+stage 'bounded incoming request reads'
+python3 "$project_root/tests/http-lifecycle.py" reads "$xvid_origin" 16 10
+stage 'TERM drains a held partial HTTP request'
+python3 "$project_root/tests/http-lifecycle.py" shutdown "$xvid_origin" "$xvid_pid"
+wait "$xvid_pid"
+xvid_pid=""
+start_server
 
 stage 'home and served application assets'
 http -fsS -D "$xvid_temp/home.headers" "$xvid_origin/" > "$xvid_temp/home.html"
@@ -474,6 +484,75 @@ wait_for_absence "/proc/$descendant_pid"
 [[ -z "$(find "$xvid_temp/data/jobs/$stall_id/output" -type f -print -quit)" ]]
 delete_job "$stall_path"
 wait_for_absence "$xvid_temp/data/jobs/$stall_id"
+
+stage 'service shutdown interrupts HTTP, SSE, provider I/O and owned encoder descendants'
+shutdown_choice=$(create_job 'https://x.com/fixture/status/2103' 1 "$xvid_temp/shutdown-choice.headers")
+shutdown_choice_path=$(job_path_from_location "$shutdown_choice")
+shutdown_choice_id=$(job_id_from_location "$shutdown_choice")
+wait_for_state "$xvid_temp/data/jobs/$shutdown_choice_id/job.json" awaiting_choice
+http -Ns --max-time 20 "$xvid_origin$shutdown_choice_path/events" > "$xvid_temp/shutdown-events" 2>/dev/null &
+sse_pid=$!
+for _ in $(seq 1 200); do
+  rg -q 'awaiting_choice' "$xvid_temp/shutdown-events" && break
+  sleep 0.025
+done
+rg -q 'awaiting_choice' "$xvid_temp/shutdown-events"
+shutdown_encode=$(create_job 'https://x.com/fixture/status/2143' 1 "$xvid_temp/shutdown-encode.headers")
+shutdown_encode_path=$(job_path_from_location "$shutdown_encode")
+shutdown_encode_id=$(job_id_from_location "$shutdown_encode")
+shutdown_manifest="$xvid_temp/data/jobs/$shutdown_encode_id/job.json"
+wait_for_state "$shutdown_manifest" awaiting_choice
+post_job_action "$shutdown_encode_path" start 'kind=video&variant=best&delivery=optimise'
+shutdown_descendant_file="$xvid_temp/data/jobs/$shutdown_encode_id/ffmpeg-descendant.pid"
+for _ in $(seq 1 400); do
+  [[ -s "$shutdown_descendant_file" ]] && break
+  sleep 0.025
+done
+[[ -s "$shutdown_descendant_file" ]]
+shutdown_descendant=$(tr -d '\r\n' < "$shutdown_descendant_file")
+[[ "$shutdown_descendant" =~ ^[1-9][0-9]*$ ]]
+kill -0 "$shutdown_descendant"
+source_digest=$(sha256sum "$xvid_temp/data/jobs/$shutdown_encode_id/source/item-001.mp4" | awk '{print $1}')
+shutdown_probe=$(create_job 'https://x.com/fixture/status/2151' 0 "$xvid_temp/shutdown-probe.headers")
+shutdown_probe_id=$(job_id_from_location "$shutdown_probe")
+for _ in $(seq 1 200); do
+  rg -q fixture_metadata_stall_entered "$xvid_temp/x-server.log" && break
+  sleep 0.025
+done
+rg -q fixture_metadata_stall_entered "$xvid_temp/x-server.log"
+# With only the cooperative SSE request open, HTTP drain ends promptly and
+# Io cancellation reaches the encoder before its normal TERM grace elapses.
+python3 "$project_root/tests/http-lifecycle.py" shutdown-idle "$xvid_origin" "$xvid_pid"
+wait "$xvid_pid"
+# Assert disappearance before any session-cleanup helper can mask a leak.
+wait_for_absence "/proc/$shutdown_descendant"
+xvid_pid=""
+wait "$sse_pid" || true
+sse_pid=""
+rg -q '"state": "preparing"' "$shutdown_manifest"
+[[ "$(sha256sum "$xvid_temp/data/jobs/$shutdown_encode_id/source/item-001.mp4" | awk '{print $1}')" == "$source_digest" ]]
+rg -q '"state": "probing"' "$xvid_temp/data/jobs/$shutdown_probe_id/job.json"
+start_server
+wait_for_state "$xvid_temp/data/jobs/$shutdown_probe_id/job.json" ready
+# Prove preparation resumed before recovering the retained original.
+resumed_descendant=
+for _ in $(seq 1 400); do
+  resumed_descendant=$(tr -d '\r\n' < "$shutdown_descendant_file")
+  if [[ "$resumed_descendant" =~ ^[1-9][0-9]*$ && "$resumed_descendant" != "$shutdown_descendant" ]] && kill -0 "$resumed_descendant" 2>/dev/null; then break; fi
+  sleep 0.025
+done
+[[ "$resumed_descendant" != "$shutdown_descendant" ]]
+kill -0 "$resumed_descendant"
+post_job_action "$shutdown_encode_path" use-original ''
+wait_for_state "$shutdown_manifest" ready
+wait_for_absence "/proc/$resumed_descendant"
+[[ "$(sha256sum "$xvid_temp/data/jobs/$shutdown_encode_id/source/item-001.mp4" | awk '{print $1}')" == "$source_digest" ]]
+http -fsS "$xvid_origin$shutdown_choice_path" > /dev/null
+post_job_action "$shutdown_choice_path" cancel
+for location in "$shutdown_choice" "$shutdown_encode" "$shutdown_probe"; do
+  delete_job "$(job_path_from_location "$location")"
+  wait_for_absence "$xvid_temp/data/jobs/$(job_id_from_location "$location")"
+done
 
 stage 'probe cancellation'
 cancel_location=$(create_job 'https://x.com/fixture/status/2135' 1 "$xvid_temp/cancel.headers")

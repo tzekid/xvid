@@ -58,11 +58,10 @@ pub fn run(
         .stderr = .pipe,
         .pgid = if (builtin.os.tag == .windows) null else 0,
     });
-    errdefer {
-        signalGroup(child, .KILL);
-        child.kill(io);
-    }
     defer child.kill(io);
+    // Error cleanup must signal the group before kill() reaps the leader and
+    // clears child.id; otherwise an I/O cancellation can leave descendants.
+    errdefer signalGroup(child, .KILL);
 
     var multi_reader_buffer: std.Io.File.MultiReader.Buffer(2) = undefined;
     var multi_reader: std.Io.File.MultiReader = undefined;
@@ -145,11 +144,10 @@ pub fn runLines(
         .stderr = .pipe,
         .pgid = if (builtin.os.tag == .windows) null else 0,
     });
-    errdefer {
-        signalGroup(child, .KILL);
-        child.kill(io);
-    }
     defer child.kill(io);
+    // Error cleanup must signal the group before kill() reaps the leader and
+    // clears child.id; otherwise an I/O cancellation can leave descendants.
+    errdefer signalGroup(child, .KILL);
 
     var multi_reader_buffer: std.Io.File.MultiReader.Buffer(2) = undefined;
     var multi_reader: std.Io.File.MultiReader = undefined;

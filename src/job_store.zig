@@ -57,6 +57,16 @@ pub const Registry = struct {
         registry.allocator.free(registry.data_root);
     }
 
+    /// Interrupt owned operations without persisting a user cancellation.
+    /// Their durable state remains recoverable by the next process.
+    pub fn interruptWork(registry: *Registry) void {
+        registry.lock();
+        defer registry.unlock();
+        for (registry.slots) |slot| if (slot) |job| {
+            job.cancel_requested.store(true, .release);
+        };
+    }
+
     pub fn storageBytes(registry: *Registry) !u64 {
         var total: u64 = 0;
         inline for (.{ registry.jobs_root, registry.quarantine_root }) |root_path| {
@@ -232,7 +242,6 @@ pub const Registry = struct {
         if (job.data.state != .preparing or job.data.source_artifacts.len == 0) return false;
         const delivery = job.data.delivery orelse return error.MissingDelivery;
         if (delivery.mode == .original) return false;
-        job.cancel_requested.store(false, .release);
         job.data.updated_at = now;
         job.progress = .{
             .phase = .source_probe,

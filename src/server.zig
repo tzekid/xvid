@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const App = @import("app.zig").App;
 const routes = @import("routes.zig");
+const RequestReader = @import("request_reader.zig");
 
 const max_header_bytes = 16 * 1024;
 var signal_requested: std.atomic.Value(bool) = .init(false);
@@ -9,7 +10,7 @@ var signal_requested: std.atomic.Value(bool) = .init(false);
 const Runtime = struct {
     app: *App,
     queue: []?std.Io.net.Stream,
-    workers: []?std.Thread,
+    active: []?std.Io.net.Stream,
     head: usize = 0,
     tail: usize = 0,
     count: usize = 0,
@@ -34,7 +35,7 @@ const Runtime = struct {
         return true;
     }
 
-    fn dequeue(runtime: *Runtime) ?std.Io.net.Stream {
+    fn dequeue(runtime: *Runtime, index: usize) ?std.Io.net.Stream {
         while (true) {
             runtime.lock();
             if (runtime.count > 0) {
@@ -42,6 +43,7 @@ const Runtime = struct {
                 runtime.queue[runtime.head] = null;
                 runtime.head = (runtime.head + 1) % runtime.queue.len;
                 runtime.count -= 1;
+                runtime.active[index] = stream;
                 runtime.unlock();
                 return stream;
             }
@@ -64,10 +66,10 @@ pub fn serve(app: *App) !void {
     const queue = try app.allocator.alloc(?std.Io.net.Stream, app.config.http_queue);
     defer app.allocator.free(queue);
     @memset(queue, null);
-    const workers = try app.allocator.alloc(?std.Thread, app.config.http_workers);
-    defer app.allocator.free(workers);
-    @memset(workers, null);
-    var runtime = Runtime{ .app = app, .queue = queue, .workers = workers };
+    const active = try app.allocator.alloc(?std.Io.net.Stream, app.config.http_workers);
+    defer app.allocator.free(active);
+    @memset(active, null);
+    var runtime = Runtime{ .app = app, .queue = queue, .active = active };
 
     var old_interrupt: std.posix.Sigaction = undefined;
     var old_terminate: std.posix.Sigaction = undefined;
@@ -83,17 +85,24 @@ pub fn serve(app: *App) !void {
         std.posix.sigaction(.TERM, &old_terminate, null);
     }
 
-    var started: usize = 0;
-    errdefer {
+    var workers: std.Io.Group = .init;
+    defer {
         runtime.lock();
         runtime.stopping = true;
+        while (runtime.count > 0) {
+            const stream = runtime.queue[runtime.head].?;
+            runtime.queue[runtime.head] = null;
+            runtime.head = (runtime.head + 1) % runtime.queue.len;
+            runtime.count -= 1;
+            stream.close(app.io);
+        }
+        for (active) |slot| if (slot) |stream| {
+            _ = std.c.shutdown(stream.socket.handle, std.c.SHUT.RDWR);
+        };
         runtime.unlock();
-        for (workers[0..started]) |thread| if (thread) |item| item.join();
+        workers.cancel(app.io);
     }
-    for (workers) |*slot| {
-        slot.* = try std.Thread.spawn(.{}, workerMain, .{&runtime});
-        started += 1;
-    }
+    for (0..app.config.http_workers) |index| try workers.concurrent(app.io, workerMain, .{ &runtime, index });
 
     std.log.info("listening on {s}", .{app.config.listen});
     while (!signal_requested.load(.acquire)) {
@@ -114,7 +123,7 @@ pub fn serve(app: *App) !void {
             sleepMillisecond();
             continue;
         };
-        configureSocketTimeout(stream, app.config.http_inactivity_seconds) catch |err| {
+        configureWriteTimeout(stream, app.config.http_inactivity_seconds) catch |err| {
             std.log.warn("connection timeout setup failed: {s}", .{@errorName(err)});
             stream.close(app.io);
             continue;
@@ -125,6 +134,7 @@ pub fn serve(app: *App) !void {
         }
     }
 
+    app.beginShutdown();
     runtime.lock();
     runtime.stopping = true;
     while (runtime.count > 0) {
@@ -135,28 +145,39 @@ pub fn serve(app: *App) !void {
         stream.close(app.io);
     }
     runtime.unlock();
-    for (workers) |*slot| {
-        if (slot.*) |thread| thread.join();
-        slot.* = null;
+    const drain_started: std.Io.Clock.Timestamp = .now(app.io, .awake);
+    while (drain_started.untilNow(app.io).raw.toMilliseconds() < 5000) {
+        runtime.lock();
+        const empty = for (active) |slot| {
+            if (slot != null) break false;
+        } else true;
+        runtime.unlock();
+        if (empty) break;
+        sleepMillisecond();
     }
+    // The defer shuts down registered sockets, cancels blocked upstream I/O,
+    // and joins before restoring signals or freeing connection storage.
 }
 
-fn workerMain(runtime: *Runtime) void {
-    while (runtime.dequeue()) |stream| {
+fn workerMain(runtime: *Runtime, index: usize) void {
+    while (runtime.dequeue(index)) |stream| {
         serveConnection(runtime.app, stream) catch |err| switch (err) {
-            error.HttpConnectionClosing, error.ReadFailed, error.WriteFailed => {},
+            error.HttpConnectionClosing, error.ReadFailed, error.WriteFailed, error.Canceled => {},
             else => std.log.warn("connection failed: {s}", .{@errorName(err)}),
         };
+        runtime.lock();
+        runtime.active[index] = null;
         stream.close(runtime.app.io);
+        runtime.unlock();
     }
 }
 
 fn serveConnection(app: *App, stream: std.Io.net.Stream) !void {
     var request_buffer: [max_header_bytes]u8 = undefined;
     var response_buffer: [16 * 1024]u8 = undefined;
-    var connection_reader = stream.reader(app.io, &request_buffer);
+    var connection_reader = RequestReader.init(app.io, stream, .fromSeconds(app.config.http_inactivity_seconds), &request_buffer);
     var connection_writer = stream.writer(app.io, &response_buffer);
-    var http_server = std.http.Server.init(&connection_reader.interface, &connection_writer.interface);
+    var http_server = std.http.Server.init(&connection_reader.reader, &connection_writer.interface);
     var request = http_server.receiveHead() catch |err| switch (err) {
         error.HttpHeadersOversize => return writeHeaderTooLarge(&connection_writer.interface),
         else => return err,
@@ -190,11 +211,9 @@ fn clientContext(stream: std.Io.net.Stream) routes.ClientContext {
     return .{ .peer_key = 1, .peer_is_loopback = false };
 }
 
-fn respondBusy(io: std.Io, stream: std.Io.net.Stream) !void {
-    var buffer: [512]u8 = undefined;
-    var writer = stream.writer(io, &buffer);
-    try writer.interface.writeAll("HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: 11\r\nRetry-After: 1\r\nConnection: close\r\n\r\nserver busy");
-    try writer.interface.flush();
+fn respondBusy(_: std.Io, stream: std.Io.net.Stream) !void {
+    const response = "HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: 11\r\nRetry-After: 1\r\nConnection: close\r\n\r\nserver busy";
+    _ = std.c.send(stream.socket.handle, response.ptr, response.len, std.posix.MSG.DONTWAIT | std.posix.MSG.NOSIGNAL);
 }
 
 fn writeHeaderTooLarge(writer: *std.Io.Writer) !void {
@@ -212,10 +231,9 @@ fn sleepMillisecond() void {
     _ = std.c.nanosleep(&request, &remaining);
 }
 
-fn configureSocketTimeout(stream: std.Io.net.Stream, seconds: u16) !void {
+fn configureWriteTimeout(stream: std.Io.net.Stream, seconds: u16) !void {
     if (comptime builtin.os.tag != .windows and builtin.os.tag != .wasi) {
         const timeout: std.posix.timeval = .{ .sec = seconds, .usec = 0 };
-        try std.posix.setsockopt(stream.socket.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&timeout));
         try std.posix.setsockopt(stream.socket.handle, std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, std.mem.asBytes(&timeout));
     }
 }

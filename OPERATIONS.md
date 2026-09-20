@@ -44,8 +44,10 @@ The script runs the focused Zig tests and real-process E2E journey before callin
 the same installer used by automatic deployment. The installer builds the
 ReleaseSafe executable, checks the production configuration, preserves the old
 binary and service unit, restarts the service, waits for local readiness, and
-checks that `/proc/<MainPID>/exe` matches the installed file. A readiness failure
-restores the previous binary and unit automatically.
+checks that `/proc/<MainPID>/exe` matches the installed file. Any failure after promotion starts restores the previous binary, unit, automatic
+controller files, revision record and rollback pair, then verifies the restored
+service. An incomplete rollback retains its private recovery snapshot and
+reports its location. The existing deployment lock serializes installers.
 
 After deployment, the shortest useful operator check is:
 
@@ -56,6 +58,15 @@ systemctl --user show xvid.service -p ActiveState -p MainPID -p NRestarts
 
 For a user-facing change, exercise the affected public journey once and remove
 the temporary job afterward.
+
+Incoming headers and form bodies share a cumulative socket-read wait budget from
+`http_inactivity_seconds`; trickling bytes does not replenish it. Outgoing media
+and SSE retain inactivity-based writes, so progressing large downloads do not
+hit a total-duration ceiling. On TERM, queued requests stop, SSE exits, and owned
+jobs are interrupted without persisting a user cancellation. HTTP workers have
+five seconds to drain before their sockets and blocked provider I/O are canceled.
+Background tasks and owned encoder process groups stop before their state is
+freed. Unfinished jobs recover from their persisted state after restart.
 
 ## Common commands
 

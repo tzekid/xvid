@@ -147,7 +147,7 @@ fn jobEvents(app: *App, request: *std.http.Server.Request, id: []const u8) !void
     var response = try request.respondStreaming(&response_buffer, .{ .respond_options = .{ .status = .ok, .extra_headers = &headers } });
     var last_revision = resume_revision;
     var ticks: u16 = 0;
-    while (ticks < 1200) : (ticks += 1) {
+    while (ticks < 1200 and !app.stop_background.load(.acquire)) : (ticks += 1) {
         var arena_state = std.heap.ArenaAllocator.init(app.allocator);
         defer arena_state.deinit();
         const snapshot = (try app.registry.snapshot(arena_state.allocator(), id)) orelse {

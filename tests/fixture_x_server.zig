@@ -15,6 +15,7 @@ const State = struct {
     transient_malformed_syndication: u8 = 0,
     rejected_graphql_drop_syndication: u8 = 0,
     slow_probe_requests: u8 = 0,
+    interrupted_probe_requests: u8 = 0,
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -133,6 +134,22 @@ fn graphqlResponse(io: std.Io, allocator: std.mem.Allocator, request: *std.http.
     if (std.mem.eql(u8, status_id, "2134")) {
         state.transient_malformed_graphql += 1;
         if (state.transient_malformed_graphql == 1) return jsonResponse(request, .ok, "{truncated\n");
+    }
+    if (std.mem.eql(u8, status_id, "2151")) {
+        state.interrupted_probe_requests += 1;
+        if (state.interrupted_probe_requests == 1) {
+            std.debug.print("fixture_metadata_stall_entered\n", .{});
+            var buffer: [128]u8 = undefined;
+            var response = try request.respondStreaming(&buffer, .{
+                .respond_options = .{ .extra_headers = &.{.{ .name = "content-type", .value = "application/json" }} },
+            });
+            while (true) {
+                try response.writer.writeByte(' ');
+                try response.writer.flush();
+                try response.flush();
+                try io.sleep(.fromMilliseconds(50), .awake);
+            }
+        }
     }
     if (std.mem.eql(u8, status_id, "2135")) {
         state.slow_probe_requests += 1;
