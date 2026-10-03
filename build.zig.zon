@@ -2,7 +2,7 @@
     .name = .xvid,
     .version = "1.0.0",
     .fingerprint = 0x21533622f951fa9f,
-    .minimum_zig_version = "0.17.0-dev.2338+b46a7f3a2",
+    .minimum_zig_version = "0.17.0",
     .dependencies = .{},
     .paths = .{
         "build.zig",
