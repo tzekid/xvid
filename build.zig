@@ -22,33 +22,9 @@ pub fn build(b: *std.Build) void {
     const run_tests = b.addRunArtifact(tests);
     b.step("test", "Run focused parser, validation, state, and rendering tests").dependOn(&run_tests.step);
 
-    const fixture_ffmpeg = b.addExecutable(.{
-        .name = "fixture-ffmpeg",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/fixture_ffmpeg.zig"),
-            .target = target,
-            .optimize = optimize,
-            .link_libc = true,
-        }),
-    });
-    const fixture_ffprobe = b.addExecutable(.{
-        .name = "fixture-ffprobe",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/fixture_ffprobe.zig"),
-            .target = target,
-            .optimize = optimize,
-            .link_libc = true,
-        }),
-    });
-    const fixture_x_server = b.addExecutable(.{
-        .name = "fixture-x-server",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/fixture_x_server.zig"),
-            .target = target,
-            .optimize = optimize,
-            .link_libc = true,
-        }),
-    });
+    const fixture_ffmpeg = fixture(b, target, optimize, "fixture-ffmpeg", "tests/fixture_ffmpeg.zig");
+    const fixture_ffprobe = fixture(b, target, optimize, "fixture-ffprobe", "tests/fixture_ffprobe.zig");
+    const fixture_x_server = fixture(b, target, optimize, "fixture-x-server", "tests/fixture_x_server.zig");
     fixture_x_server.root_module.addAnonymousImport("fixture_poster", .{ .root_source_file = b.path("assets/icon-180.png") });
     const e2e = b.addSystemCommand(&.{ "bash", "tests/e2e.sh" });
     e2e.addArtifactArg(executable);
@@ -62,6 +38,24 @@ pub fn build(b: *std.Build) void {
     e2e_step.dependOn(&instagram_e2e.step);
     const installer_e2e = b.addSystemCommand(&.{ "python3", "tests/install.py" });
     e2e_step.dependOn(&installer_e2e.step);
+}
+
+fn fixture(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    name: []const u8,
+    root_path: []const u8,
+) *std.Build.Step.Compile {
+    return b.addExecutable(.{
+        .name = name,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path(root_path),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
 }
 
 fn applicationModule(
